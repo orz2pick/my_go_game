@@ -22,6 +22,8 @@ body{background:#8B7355}
 
 /* ===== Canvas ===== */
 canvas#board{display:block;border-radius:4px;touch-action:none}
+#hand-cursor{position:absolute;pointer-events:none;z-index:20;opacity:0;transition:opacity .25s;width:48px;height:48px;display:none}
+#hand-cursor.visible{opacity:1}
 
 /* ===== 底部控制栏 ===== */
 #bottom-bar{flex-shrink:0;display:flex;justify-content:center;gap:8px;padding:8px 12px 12px;background:linear-gradient(0deg,#3A2A1A,#5C4033);box-shadow:0 -2px 6px rgba(0,0,0,.4);flex-wrap:wrap}
@@ -56,6 +58,7 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 
 <div id="board-wrap">
   <canvas id="board"></canvas>
+  <img id="hand-cursor" src="手指.png" alt="" draggable="false">
 </div>
 
 <div id="bottom-bar">
@@ -641,9 +644,21 @@ class BoardRenderer {
     const {x, y} = this.pointToCanvas(lm.r, lm.c);
     const ctx = this.ctx;
     ctx.save();
-    ctx.fillStyle = '#ff6b35';
     ctx.shadowColor = 'transparent';
-    ctx.beginPath(); ctx.arc(x, y, this.STONE_R * 0.22, 0, Math.PI * 2); ctx.fill();
+    // 发光光环：从半透明到渐变消失
+    const glowR = this.STONE_R * 1.5;
+    const grad = ctx.createRadialGradient(x, y, this.STONE_R * 0.3, x, y, glowR);
+    if (clr === 1) {
+      grad.addColorStop(0, 'rgba(255,215,0,0.35)');
+      grad.addColorStop(0.5, 'rgba(255,215,0,0.15)');
+      grad.addColorStop(1, 'rgba(255,215,0,0)');
+    } else {
+      grad.addColorStop(0, 'rgba(100,200,255,0.4)');
+      grad.addColorStop(0.5, 'rgba(100,200,255,0.15)');
+      grad.addColorStop(1, 'rgba(100,200,255,0)');
+    }
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(x, y, glowR, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 
@@ -817,8 +832,33 @@ const btnTerritory = document.getElementById('btn-territory');
 const btnResign = document.getElementById('btn-resign');
 const btnRestart = document.getElementById('btn-restart');
 
-// ---- 手指光标（CSS cursor data URL） ----
+// ---- 移动端检测 & 手指光标（CSS cursor + overlay 混合方案） ----
+const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 let fingerReady = false;
+let fingerTimeout = null;
+
+// 显示手指 overlay（移动端落子时触发）
+function showFingerOverlay(r, c) {
+  const el = handCursor;
+  if (!fingerReady && !fingerLoaded) return;
+  const {x, y} = renderer.pointToCanvas(r, c);
+  const rect = canvas.getBoundingClientRect();
+  const px = rect.left + x * (rect.width / canvas.width);
+  const py = rect.top + y * (rect.height / canvas.height);
+  el.style.display = 'block';
+  el.style.left = (px - 24) + 'px';
+  el.style.top = (py - 42) + 'px';
+  // 强制回流后加 visible class 触发过渡
+  void el.offsetWidth;
+  el.classList.add('visible');
+  clearTimeout(fingerTimeout);
+  fingerTimeout = setTimeout(() => {
+    el.classList.remove('visible');
+    setTimeout(() => { el.style.display = 'none'; }, 250);
+  }, 1000);
+}
+
+// PC端：CSS cursor 手指
 (function setupFingerCursor() {
   const img = new Image();
   img.onload = () => {
@@ -827,9 +867,12 @@ let fingerReady = false;
     const tctx = tc.getContext('2d');
     tctx.drawImage(img, 0, 0, 48, 48);
     const dataUrl = tc.toDataURL('image/png');
-    // 热点偏移：指尖在 (24, 42) / 48px 空间
     canvas.style.cursor = `url(${dataUrl}) 24 42, crosshair`;
     fingerReady = true;
+    // 移动端不需要 CSS cursor，但需要图片已加载用于 overlay
+    if (isTouchDevice) {
+      // 图片加载后让 overlay 随时可用
+    }
   };
   img.onerror = () => {
     canvas.style.cursor = 'crosshair';
@@ -837,6 +880,13 @@ let fingerReady = false;
   };
   img.src = '手指.png';
 })();
+
+// 图片加载完成标记（给移动端 overlay 用）
+let fingerLoaded = false;
+const fingerImg = new Image();
+fingerImg.onload = () => { fingerLoaded = true; };
+fingerImg.onerror = () => { fingerLoaded = false; };
+fingerImg.src = '手指.png';
 
 // ---- 更新 UI ----
 function updateUI() {
@@ -864,6 +914,8 @@ function doMove(r, c) {
   renderer.startAnimation(r, c, clr);
   renderer.cachedTerritory = null;
   if (clr === 1) playBlackMoveSound(); else playWhiteMoveSound();
+  // 移动端：落子后在交叉点展示手指 1 秒
+  if (isTouchDevice) showFingerOverlay(r, c);
   updateUI();
   requestRender();
   if (game.gameOver) showResult();
