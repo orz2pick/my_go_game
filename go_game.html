@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>围棋对弈</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-tap-highlight-color:transparent}
+html,body{width:100%;height:100%;overflow:hidden;font-family:-apple-system,'PingFang SC','Helvetica Neue',sans-serif;display:flex;flex-direction:column}
+body{background:#8B7355}
+
+/* ===== 顶部信息栏 ===== */
+#top-bar{flex-shrink:0;display:flex;justify-content:space-between;align-items:center;padding:6px 16px;background:linear-gradient(135deg,#5C4033,#8B6914);color:#fff;font-size:14px;font-weight:600;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+#top-bar .turn{display:flex;align-items:center;gap:6px}
+.turn-dot{display:inline-block;width:16px;height:16px;border-radius:50%;border:1px solid rgba(255,255,255,.3);flex-shrink:0}
+.turn-dot.black{background:radial-gradient(circle at 35% 35%,#666,#111)}
+.turn-dot.white{background:radial-gradient(circle at 35% 35%,#fff,#bbb)}
+.capture-info{display:flex;gap:16px}
+
+/* ===== 棋盘容器 ===== */
+#board-wrap{flex:1;overflow:hidden;position:relative;display:flex;align-items:center;justify-content:center}
+
+/* ===== Canvas ===== */
+canvas#board{display:block;border-radius:4px;touch-action:none}
+
+/* ===== 底部控制栏 ===== */
+#bottom-bar{flex-shrink:0;display:flex;justify-content:center;gap:8px;padding:8px 12px 12px;background:linear-gradient(0deg,#3A2A1A,#5C4033);box-shadow:0 -2px 6px rgba(0,0,0,.4);flex-wrap:wrap}
+#bottom-bar button{padding:7px 14px;border:none;border-radius:8px;font-size:13px;font-weight:600;color:#fff;background:linear-gradient(135deg,#8B7355,#A0896A);box-shadow:0 2px 4px rgba(0,0,0,.3);cursor:pointer;transition:transform .1s,box-shadow .1s;min-width:60px;white-space:nowrap}
+#bottom-bar button:active{transform:scale(.93);box-shadow:0 0 2px rgba(0,0,0,.3)}
+#bottom-bar button:disabled{opacity:.4;transform:none;cursor:not-allowed}
+#bottom-bar button.active{background:linear-gradient(135deg,#A07818,#C89820)}
+
+/* ===== 结果弹窗 ===== */
+#result-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
+#result-overlay.show{display:flex}
+#result-box{background:linear-gradient(135deg,#F5E6C8,#E8D5A8);border-radius:16px;padding:32px 40px;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,.5);max-width:90vw}
+#result-box h2{font-size:24px;color:#3A2A1A;margin-bottom:8px}
+#result-box p{font-size:18px;color:#5C4033;margin:6px 0}
+#result-box .detail{font-size:14px;color:#8B7355;margin-top:12px}
+#result-box button{margin-top:20px;padding:10px 36px;border:none;border-radius:8px;font-size:16px;font-weight:600;color:#fff;background:linear-gradient(135deg,#8B6914,#A07818);cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.3)}
+#result-box button:active{transform:scale(.95)}
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  <div class="turn">
+    <span class="turn-dot black" id="turn-dot"></span>
+    <span id="turn-text">黑棋落子</span>
+  </div>
+  <div class="capture-info">
+    <span>⚫ 提子: <strong id="black-cap">0</strong></span>
+    <span>⚪ 提子: <strong id="white-cap">0</strong></span>
+  </div>
+</div>
+
+<div id="board-wrap">
+  <canvas id="board"></canvas>
+</div>
+
+<div id="bottom-bar">
+  <button id="btn-undo">⟲ 悔棋</button>
+  <button id="btn-pass">停一手</button>
+  <button id="btn-territory">🏁 领地</button>
+  <button id="btn-resign">🏳 认输</button>
+</div>
+
+<div id="result-overlay">
+  <div id="result-box">
+    <h2 id="result-title"></h2>
+    <p id="result-detail"></p>
+    <p class="detail" id="result-breakdown"></p>
+    <button id="btn-restart">再来一局</button>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// ====================== 1. 围棋规则引擎 ======================
+// ============================================================
+class GoGame {
+  constructor() {
+    this.N = 19;
+    this.reset();
+  }
+
+  reset() {
+    this.board = Array.from({length: this.N}, () => Array(this.N).fill(0));
+    this.turn = 1;
+    this.captures = {1: 0, 2: 0};
+    this.history = [];
+    this.koPoint = null;
+    this.passCount = 0;
+    this.gameOver = false;
+    this.lastMove = null;
+    this.territory = null;
+    this.scores = null;
+    this.valid = null;  // computeValidMoves() fills this
+  }
+
+  boardClone() {
+    return this.board.map(row => [...row]);
+  }
+
+  getGroup(r, c) {
+    const color = this.board[r][c];
+    if (color === 0) return [];
+    const visited = new Set();
+    const group = [];
+    const stack = [[r, c]];
+    while (stack.length) {
+      const [cr, cc] = stack.pop();
+      const key = cr * this.N + cc;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      if (this.board[cr][cc] !== color) continue;
+      group.push([cr, cc]);
+      for (const [nr, nc] of this.neighbors(cr, cc)) {
+        if (!visited.has(nr * this.N + nc)) stack.push([nr, nc]);
+      }
+    }
+    return group;
+  }
+
+  getGroupLibertyCount(r, c) {
+    const group = this.getGroup(r, c);
+    if (group.length === 0) return 0;
+    const libs = new Set();
+    for (const [gr, gc] of group) {
+      for (const [nr, nc] of this.neighbors(gr, gc)) {
+        if (this.board[nr][nc] === 0) libs.add(nr * this.N + nc);
+      }
+    }
+    return libs.size;
+  }
+
+  getLiberties(r, c) {
+    const color = this.board[r][c];
+    if (color === 0) return [];
+    const group = this.getGroup(r, c);
+    const libs = new Set();
+    for (const [gr, gc] of group) {
+      for (const [nr, nc] of this.neighbors(gr, gc)) {
+        if (this.board[nr][nc] === 0) libs.add(nr * this.N + nc);
+      }
+    }
+    return [...libs].map(k => [Math.floor(k / this.N), k % this.N]);
+  }
+
+  neighbors(r, c) {
+    const n = [];
+    if (r > 0) n.push([r - 1, c]);
+    if (r < this.N - 1) n.push([r + 1, c]);
+    if (c > 0) n.push([r, c - 1]);
+    if (c < this.N - 1) n.push([r, c + 1]);
+    return n;
+  }
+
+  isValidMove(r, c) {
+    if (r < 0 || r >= this.N || c < 0 || c >= this.N) return false;
+    if (this.board[r][c] !== 0) return false;
+    if (this.gameOver) return false;
+    if (this.koPoint && this.koPoint.r === r && this.koPoint.c === c) return false;
+
+    const boardCopy = this.boardClone();
+    boardCopy[r][c] = this.turn;
+    const opp = this.turn === 1 ? 2 : 1;
+    let canCap = false;
+
+    for (const [nr, nc] of this.neighbors(r, c)) {
+      if (boardCopy[nr][nc] === opp) {
+        const grp = findGroupAt(nr, nc, boardCopy, this.N);
+        if (findLibertiesAt(grp, boardCopy, this.N).length === 0) canCap = true;
+      }
+    }
+
+    const myGroup = findGroupAt(r, c, boardCopy, this.N);
+    if (findLibertiesAt(myGroup, boardCopy, this.N).length === 0 && !canCap) return false;
+    return true;
+  }
+
+  // 计算所有合法落子位置（当前玩家）
+  computeValidMoves() {
+    this.valid = Array.from({length: this.N}, () => Array(this.N).fill(false));
+    if (this.gameOver) return;
+    for (let r = 0; r < this.N; r++) {
+      for (let c = 0; c < this.N; c++) {
+        if (this.board[r][c] !== 0) continue;
+        if (this.koPoint && this.koPoint.r === r && this.koPoint.c === c) continue;
+        // 快速判断：与对手棋子或空棋相邻才需要复杂检查
+        const boardCopy = this.boardClone();
+        boardCopy[r][c] = this.turn;
+        const opp = this.turn === 1 ? 2 : 1;
+        let canCap = false;
+        for (const [nr, nc] of this.neighbors(r, c)) {
+          if (boardCopy[nr][nc] === opp) {
+            const grp = findGroupAt(nr, nc, boardCopy, this.N);
+            if (findLibertiesAt(grp, boardCopy, this.N).length === 0) canCap = true;
+          }
+        }
+        const myGroup = findGroupAt(r, c, boardCopy, this.N);
+        if (findLibertiesAt(myGroup, boardCopy, this.N).length === 0 && !canCap) continue;
+        this.valid[r][c] = true;
+      }
+    }
+  }
+
+  placeStone(r, c) {
+    if (!this.isValidMove(r, c)) return false;
+
+    this.history.push({
+      board: this.boardClone(),
+      captures: {...this.captures},
+      koPoint: this.koPoint ? {...this.koPoint} : null,
+      passCount: this.passCount,
+      turn: this.turn,
+      lastMove: this.lastMove ? {...this.lastMove} : null,
+      gameOver: this.gameOver
+    });
+
+    this.board[r][c] = this.turn;
+    const opp = this.turn === 1 ? 2 : 1;
+    let captured = [];
+
+    for (const [nr, nc] of this.neighbors(r, c)) {
+      if (this.board[nr][nc] === opp) {
+        const grp = this.getGroup(nr, nc);
+        if (this.getLiberties(nr, nc).length === 0) {
+          for (const [gr, gc] of grp) {
+            this.board[gr][gc] = 0;
+            captured.push([gr, gc]);
+          }
+        }
+      }
+    }
+
+    this.captures[this.turn] += captured.length;
+
+    if (captured.length === 1 && this.getGroup(r, c).length === 1) {
+      this.koPoint = {r: captured[0][0], c: captured[0][1]};
+    } else {
+      this.koPoint = null;
+    }
+
+    this.lastMove = {r, c};
+    this.passCount = 0;
+    this.turn = opp;
+    this.computeValidMoves();
+    return true;
+  }
+
+  pass() {
+    if (this.gameOver) return true;
+    this.history.push({
+      board: this.boardClone(),
+      captures: {...this.captures},
+      koPoint: this.koPoint ? {...this.koPoint} : null,
+      passCount: this.passCount,
+      turn: this.turn,
+      lastMove: this.lastMove ? {...this.lastMove} : null,
+      gameOver: this.gameOver
+    });
+    this.passCount++;
+    this.koPoint = null;
+    this.lastMove = null;
+    this.turn = this.turn === 1 ? 2 : 1;
+    if (this.passCount >= 2) {
+      this.gameOver = true;
+      this.calculateScore();
+    }
+    this.computeValidMoves();
+    return this.gameOver;
+  }
+
+  resign() {
+    if (this.gameOver) return;
+    this.gameOver = true;
+    this.scores = {
+      winner: this.turn === 1 ? 2 : 1,
+      byResign: true,
+      resigner: this.turn === 1 ? '黑棋' : '白棋'
+    };
+  }
+
+  undo() {
+    if (this.history.length === 0) return false;
+    if (this.gameOver) {
+      this.gameOver = false;
+      this.territory = null;
+      this.scores = null;
+    }
+    const s = this.history.pop();
+    this.board = s.board;
+    this.captures = s.captures;
+    this.koPoint = s.koPoint;
+    this.passCount = s.passCount;
+    this.turn = s.turn;
+    this.lastMove = s.lastMove;
+    if (s.gameOver !== undefined) this.gameOver = s.gameOver;
+    this.computeValidMoves();
+    return true;
+  }
+
+  calculateScore() {
+    const N = this.N;
+    const visited = Array.from({length: N}, () => Array(N).fill(false));
+    this.territory = Array.from({length: N}, () => Array(N).fill(0));
+
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        if (this.board[r][c] === 0 && !visited[r][c]) {
+          const group = [];
+          const borders = new Set();
+          const stack = [[r, c]];
+          visited[r][c] = true;
+          while (stack.length) {
+            const [cr, cc] = stack.pop();
+            group.push([cr, cc]);
+            for (const [nr, nc] of this.neighbors(cr, cc)) {
+              if (this.board[nr][nc] === 0 && !visited[nr][nc]) {
+                visited[nr][nc] = true;
+                stack.push([nr, nc]);
+              } else if (this.board[nr][nc] !== 0) {
+                borders.add(this.board[nr][nc]);
+              }
+            }
+          }
+          if (borders.size === 1) {
+            const owner = [...borders][0];
+            group.forEach(([tr, tc]) => { this.territory[tr][tc] = owner; });
+          }
+        }
+      }
+    }
+
+    let bs = 0, ws = 0;
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        if (this.board[r][c] === 1) bs++;
+        else if (this.board[r][c] === 2) ws++;
+        else if (this.territory[r][c] === 1) bs++;
+        else if (this.territory[r][c] === 2) ws++;
+      }
+    }
+
+    const komi = 7.5;
+    this.scores = {
+      blackScore: bs,
+      whiteScore: ws + komi,
+      territory: this.territory,
+      komi: komi,
+      winner: bs > ws + komi ? 1 : 2,
+      diff: Math.abs(bs - (ws + komi))
+    };
+    return this.scores;
+  }
+
+  // 计算当前领地（不计分，仅预览）
+  computeTerritory() {
+    const N = this.N;
+    const visited = Array.from({length: N}, () => Array(N).fill(false));
+    const terr = Array.from({length: N}, () => Array(N).fill(0));
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        if (this.board[r][c] === 0 && !visited[r][c]) {
+          const group = [];
+          const borders = new Set();
+          const stack = [[r, c]];
+          visited[r][c] = true;
+          while (stack.length) {
+            const [cr, cc] = stack.pop();
+            group.push([cr, cc]);
+            for (const [nr, nc] of this.neighbors(cr, cc)) {
+              if (this.board[nr][nc] === 0 && !visited[nr][nc]) {
+                visited[nr][nc] = true;
+                stack.push([nr, nc]);
+              } else if (this.board[nr][nc] !== 0) {
+                borders.add(this.board[nr][nc]);
+              }
+            }
+          }
+          if (borders.size === 1) {
+            const owner = [...borders][0];
+            group.forEach(([tr, tc]) => { terr[tr][tc] = owner; });
+          }
+        }
+      }
+    }
+    return terr;
+  }
+}
+
+function findGroupAt(r, c, board, N) {
+  const color = board[r][c];
+  if (color === 0) return [];
+  const visited = new Set();
+  const group = [];
+  const stack = [[r, c]];
+  while (stack.length) {
+    const [cr, cc] = stack.pop();
+    const key = cr * N + cc;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    if (board[cr][cc] !== color) continue;
+    group.push([cr, cc]);
+    for (const [nr, nc] of neighborsAt(cr, cc, N)) {
+      if (!visited.has(nr * N + nc)) stack.push([nr, nc]);
+    }
+  }
+  return group;
+}
+
+function findLibertiesAt(group, board, N) {
+  const libs = new Set();
+  for (const [gr, gc] of group) {
+    for (const [nr, nc] of neighborsAt(gr, gc, N)) {
+      if (board[nr][nc] === 0) libs.add(nr * N + nc);
+    }
+  }
+  return [...libs];
+}
+
+function neighborsAt(r, c, N) {
+  const n = [];
+  if (r > 0) n.push([r - 1, c]);
+  if (r < N - 1) n.push([r + 1, c]);
+  if (c > 0) n.push([r, c - 1]);
+  if (c < N - 1) n.push([r, c + 1]);
+  return n;
+}
+
+// ============================================================
+// ====================== 2. 棋盘渲染 ==========================
+// ============================================================
+class BoardRenderer {
+  constructor(canvas, game) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.game = game;
+    this.N = game.N;
+    this.CELL = 0;
+    this.PAD = 0;
+    this.STONE_R = 0;
+    this.W = 0;
+    this.H = 0;
+    this.ghostPos = null;
+    this.animating = null;
+    this.scale = 1;
+    this.transX = 0;
+    this.transY = 0;
+    this.showTerritory = false;  // 领地预览切换
+    this.cachedTerritory = null;
+    // 气数值显示的缩放因子
+    this.libertyFontSize = 0;
+  }
+
+  calcSize() {
+    const wrap = this.canvas.parentElement;
+    const wrapW = wrap.clientWidth;
+    const wrapH = wrap.clientHeight;
+    const maxW = Math.min(wrapW - 4, 800);
+    const maxH = wrapH - 4;
+    const idealCell = Math.min(Math.floor(maxW / 20), Math.floor(maxH / 20));
+    this.CELL = Math.max(idealCell, 16);
+    this.PAD = this.CELL;
+    this.STONE_R = this.CELL * 0.44;
+    this.libertyFontSize = Math.max(11, Math.round(this.CELL * 0.48));
+    this.W = 18 * this.CELL + 2 * this.PAD;
+    this.H = this.W;
+    this.canvas.width = this.W;
+    this.canvas.height = this.H;
+    this.canvas.style.width = this.W + 'px';
+    this.canvas.style.height = this.H + 'px';
+  }
+
+  pointToCanvas(r, c) {
+    return {x: this.PAD + c * this.CELL, y: this.PAD + r * this.CELL};
+  }
+
+  canvasToPoint(px, py) {
+    const c = Math.round((px - this.PAD) / this.CELL);
+    const r = Math.round((py - this.PAD) / this.CELL);
+    if (r < 0 || r >= this.N || c < 0 || c >= this.N) return null;
+    const pt = this.pointToCanvas(r, c);
+    const dist = Math.hypot(px - pt.x, py - pt.y);
+    if (dist > this.CELL * 0.5) return null;
+    return {r, c};
+  }
+
+  drawBackground() {
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+    ctx.fillStyle = '#D4A853';
+    ctx.fillRect(0, 0, W, H);
+    const imageData = ctx.getImageData(0, 0, W, H);
+    const data = imageData.data;
+    for (let y = 0; y < H; y++) {
+      const wave = Math.sin(y * 0.04) * 8 + Math.sin(y * 0.07) * 4 + Math.cos(y * 0.015) * 6;
+      const bright = 1 + wave / 200;
+      for (let x = 0; x < W; x++) {
+        const idx = (y * W + x) * 4;
+        const grain = Math.sin(x * 0.002 + y * 0.05) * 3;
+        data[idx]     = Math.min(255, Math.max(0, data[idx] * bright + grain));
+        data[idx + 1] = Math.min(255, Math.max(0, data[idx + 1] * bright + grain));
+        data[idx + 2] = Math.min(255, Math.max(0, data[idx + 2] * bright * 0.98 + grain));
+      }
+    }
+    ctx.putImageData(imageData, 0, 0);
+    const grad = ctx.createRadialGradient(W/2, H/2, W*0.3, W/2, H/2, W*0.7);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.15)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  drawGrid() {
+    const ctx = this.ctx;
+    ctx.strokeStyle = '#5C4033';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < this.N; i++) {
+      const p = this.PAD + i * this.CELL;
+      ctx.beginPath(); ctx.moveTo(this.PAD, p); ctx.lineTo(this.PAD + 18 * this.CELL, p); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p, this.PAD); ctx.lineTo(p, this.PAD + 18 * this.CELL); ctx.stroke();
+    }
+    const stars = [[3,3],[3,9],[3,15],[9,3],[9,9],[9,15],[15,3],[15,9],[15,15]];
+    ctx.fillStyle = '#5C4033';
+    for (const [r, c] of stars) {
+      const {x, y} = this.pointToCanvas(r, c);
+      ctx.beginPath(); ctx.arc(x, y, this.CELL * 0.12, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  drawStoneAt(r, c, color, ghost, scale_) {
+    const ctx = this.ctx;
+    const {x, y} = this.pointToCanvas(r, c);
+    const r0 = this.STONE_R * (scale_ || 1);
+    const alpha = ghost ? 0.35 : 1;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    if (!ghost) {
+      ctx.shadowColor = 'rgba(0,0,0,0.35)';
+      ctx.shadowBlur = 4;
+      ctx.shadowOffsetX = 2;
+      ctx.shadowOffsetY = 2;
+    }
+    if (color === 1) {
+      const g = ctx.createRadialGradient(x - r0*0.25, y - r0*0.3, r0*0.1, x + r0*0.05, y + r0*0.05, r0);
+      g.addColorStop(0, ghost ? '#888' : '#777');
+      g.addColorStop(0.5, ghost ? '#555' : '#333');
+      g.addColorStop(1, ghost ? '#333' : '#111');
+      ctx.fillStyle = g;
+    } else {
+      const g = ctx.createRadialGradient(x - r0*0.3, y - r0*0.3, r0*0.1, x + r0*0.05, y + r0*0.05, r0);
+      g.addColorStop(0, ghost ? '#fff' : '#fff');
+      g.addColorStop(0.6, ghost ? '#eee' : '#eee');
+      g.addColorStop(1, ghost ? '#ccc' : '#bbb');
+      ctx.fillStyle = g;
+      if (!ghost) ctx.shadowColor = 'rgba(0,0,0,0.25)';
+    }
+    ctx.beginPath(); ctx.arc(x, y, r0, 0, Math.PI * 2); ctx.fill();
+    if (color === 2 && !ghost) {
+      ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.lineWidth = 0.5; ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  drawAllStones() {
+    const board = this.game.board;
+    for (let r = 0; r < this.N; r++) {
+      for (let c = 0; c < this.N; c++) {
+        if (board[r][c] !== 0) {
+          this.drawStoneAt(r, c, board[r][c], false);
+        }
+      }
+    }
+    // 在棋子上绘制气数
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let r = 0; r < this.N; r++) {
+      for (let c = 0; c < this.N; c++) {
+        if (board[r][c] !== 0) {
+          const libs = this.game.getGroupLibertyCount(r, c);
+          const {x, y} = this.pointToCanvas(r, c);
+          const fs = this.libertyFontSize;
+          const bgR = fs * 0.65;
+          // 背景圆—使用棋子同色渐变
+          const grad = ctx.createRadialGradient(x, y, 0, x, y, bgR);
+          if (board[r][c] === 1) {
+            grad.addColorStop(0, 'rgba(80,80,80,0.65)');
+            grad.addColorStop(1, 'rgba(30,30,30,0.8)');
+          } else {
+            grad.addColorStop(0, 'rgba(255,255,255,0.7)');
+            grad.addColorStop(1, 'rgba(200,200,200,0.6)');
+          }
+          ctx.fillStyle = grad;
+          ctx.beginPath(); ctx.arc(x, y, bgR, 0, Math.PI * 2); ctx.fill();
+          // 文字
+          ctx.font = `900 ${fs}px -apple-system,sans-serif`;
+          ctx.fillStyle = board[r][c] === 1 ? '#fff' : '#111';
+          ctx.fillText(libs, x, y + 0.5);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  drawInvalidMoves() {
+    const valid = this.game.valid;
+    const board = this.game.board;
+    if (!valid || this.game.gameOver) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = 'rgba(220,40,40,0.55)';
+    ctx.lineWidth = 1.5;
+    for (let r = 0; r < this.N; r++) {
+      for (let c = 0; c < this.N; c++) {
+        if (board[r][c] !== 0) continue;
+        if (valid[r][c]) continue;
+        const {x, y} = this.pointToCanvas(r, c);
+        const s = this.CELL * 0.2;
+        ctx.beginPath();
+        ctx.moveTo(x - s, y - s); ctx.lineTo(x + s, y + s);
+        ctx.moveTo(x + s, y - s); ctx.lineTo(x - s, y + s);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  drawLastMove() {
+    const lm = this.game.lastMove;
+    if (!lm) return;
+    const clr = this.game.board[lm.r][lm.c];
+    if (clr === 0) return;
+    const {x, y} = this.pointToCanvas(lm.r, lm.c);
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = '#ff6b35';
+    ctx.shadowColor = 'transparent';
+    ctx.beginPath(); ctx.arc(x, y, this.STONE_R * 0.22, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  drawTerritory(terr, globalAlpha) {
+    if (!terr) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.shadowColor = 'transparent';
+    ctx.globalAlpha = globalAlpha || 0.5;
+    for (let r = 0; r < this.N; r++) {
+      for (let c = 0; c < this.N; c++) {
+        if (terr[r][c] !== 0) {
+          const {x, y} = this.pointToCanvas(r, c);
+          ctx.fillStyle = terr[r][c] === 1 ? 'rgba(255,80,80,0.5)' : 'rgba(80,160,255,0.5)';
+          ctx.fillRect(x - this.CELL/2, y - this.CELL/2, this.CELL, this.CELL);
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  render() {
+    const ctx = this.ctx;
+    this.drawBackground();
+    ctx.save();
+
+    ctx.translate(this.transX, this.transY);
+    ctx.scale(this.scale, this.scale);
+
+    ctx.beginPath();
+    ctx.rect(this.PAD - this.CELL*0.5, this.PAD - this.CELL*0.5,
+             18 * this.CELL + this.CELL, 18 * this.CELL + this.CELL);
+    ctx.clip();
+
+    this.drawGrid();
+    this.drawAllStones();
+    this.drawLastMove();
+    this.drawInvalidMoves();
+
+    // 终局领地 or 领地预览
+    if (this.game.gameOver && this.game.territory) {
+      this.drawTerritory(this.game.territory, 0.35);
+    } else if (this.showTerritory) {
+      if (!this.cachedTerritory) this.cachedTerritory = this.game.computeTerritory();
+      this.drawTerritory(this.cachedTerritory, 0.5);
+    }
+
+    if (this.ghostPos) {
+      const g = this.ghostPos;
+      if (this.game.isValidMove(g.r, g.c)) {
+        this.drawStoneAt(g.r, g.c, g.color, true);
+      }
+    }
+
+    if (this.animating) {
+      const a = this.animating;
+      const s = a.progress < 0.5
+        ? 1.2 * (a.progress / 0.5)
+        : 1.2 - 0.2 * ((a.progress - 0.5) / 0.5);
+      this.drawStoneAt(a.r, a.c, a.color, false, s);
+    }
+
+    ctx.restore();
+  }
+
+  startAnimation(r, c, color) {
+    this.animating = {r, c, color, progress: 0, startTime: performance.now()};
+  }
+}
+
+// ============================================================
+// ====================== 3. 音效（钢琴音色） ==================
+// ============================================================
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+}
+
+// 钢琴单音：正弦波 + 快速起音 + 自然衰减
+function playPianoNote(freq, startTime, duration, gain) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  osc.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(freq, startTime);
+  gainNode.gain.setValueAtTime(0, startTime);
+  gainNode.gain.linearRampToValueAtTime(gain || 0.25, startTime + 0.008);
+  gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+  osc.start(startTime);
+  osc.stop(startTime + duration);
+}
+
+// 钢琴和弦：同时播放多个频率
+function playChord(freqs, startTime, duration, gain) {
+  freqs.forEach(f => playPianoNote(f, startTime, duration, gain));
+}
+
+// 黑棋落子：两个低音和弦 (Cmaj → Gmaj, C3 八度)
+function playBlackMoveSound() {
+  try {
+    initAudio();
+    const now = audioCtx.currentTime;
+    // 和弦1: Cmaj (C3+E3+G3)
+    playChord([130.81, 164.81, 196.00], now, 0.28, 0.13);
+    // 和弦2: Gmaj (G3+B3+D4)，与前和弦有重叠
+    playChord([196.00, 246.94, 293.66], now + 0.14, 0.32, 0.11);
+  } catch(e) {}
+}
+
+// 白棋落子：两个高音和弦 (Cmaj → Gmaj, C4 八度)
+function playWhiteMoveSound() {
+  try {
+    initAudio();
+    const now = audioCtx.currentTime;
+    // 和弦1: Cmaj (C4+E4+G4)
+    playChord([261.63, 329.63, 392.00], now, 0.25, 0.14);
+    // 和弦2: Gmaj (G4+B4+D5)
+    playChord([392.00, 493.88, 587.33], now + 0.12, 0.28, 0.12);
+  } catch(e) {}
+}
+
+// 非法落子音效：轻柔短促的 "boop"
+function playInvalidSound() {
+  try {
+    initAudio();
+    const now = audioCtx.currentTime;
+    // 一个快速下行的柔和音
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(380, now);
+    osc.frequency.exponentialRampToValueAtTime(240, now + 0.1);
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.12, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    osc.start(now); osc.stop(now + 0.15);
+  } catch(e) {}
+}
+
+// ============================================================
+// ====================== 4. 游戏控制器 ========================
+// ============================================================
+let needsRender = true;
+function requestRender() { needsRender = true; }
+
+const canvas = document.getElementById('board');
+const game = new GoGame();
+const renderer = new BoardRenderer(canvas, game);
+
+const turnDot = document.getElementById('turn-dot');
+const turnText = document.getElementById('turn-text');
+const blackCap = document.getElementById('black-cap');
+const whiteCap = document.getElementById('white-cap');
+const boardWrap = document.getElementById('board-wrap');
+const resultOverlay = document.getElementById('result-overlay');
+const resultTitle = document.getElementById('result-title');
+const resultDetail = document.getElementById('result-detail');
+const resultBreakdown = document.getElementById('result-breakdown');
+const btnUndo = document.getElementById('btn-undo');
+const btnPass = document.getElementById('btn-pass');
+const btnTerritory = document.getElementById('btn-territory');
+const btnResign = document.getElementById('btn-resign');
+const btnRestart = document.getElementById('btn-restart');
+
+// ---- 手指光标（CSS cursor data URL） ----
+let fingerReady = false;
+(function setupFingerCursor() {
+  const img = new Image();
+  img.onload = () => {
+    const tc = document.createElement('canvas');
+    tc.width = 48; tc.height = 48;
+    const tctx = tc.getContext('2d');
+    tctx.drawImage(img, 0, 0, 48, 48);
+    const dataUrl = tc.toDataURL('image/png');
+    // 热点偏移：指尖在 (24, 42) / 48px 空间
+    canvas.style.cursor = `url(${dataUrl}) 24 42, crosshair`;
+    fingerReady = true;
+  };
+  img.onerror = () => {
+    canvas.style.cursor = 'crosshair';
+    console.warn('手指.png 未找到，使用默认光标');
+  };
+  img.src = '手指.png';
+})();
+
+// ---- 更新 UI ----
+function updateUI() {
+  const t = game.turn;
+  turnDot.className = 'turn-dot ' + (t === 1 ? 'black' : 'white');
+  turnText.textContent = game.gameOver ? '终局' : (t === 1 ? '黑棋落子' : '白棋落子');
+  blackCap.textContent = game.captures[1] || 0;
+  whiteCap.textContent = game.captures[2] || 0;
+  btnUndo.disabled = game.history.length === 0 || game.scores?.byResign;
+  btnPass.disabled = game.gameOver;
+  btnTerritory.disabled = game.gameOver;
+  btnResign.disabled = game.gameOver;
+  btnTerritory.classList.toggle('active', renderer.showTerritory);
+}
+
+// ---- 执行落子 ----
+function doMove(r, c) {
+  if (game.gameOver) return;
+  if (!game.isValidMove(r, c)) {
+    playInvalidSound();
+    return;
+  }
+  const clr = game.turn; // 落子前记下颜色
+  game.placeStone(r, c);
+  renderer.startAnimation(r, c, clr);
+  renderer.cachedTerritory = null;
+  if (clr === 1) playBlackMoveSound(); else playWhiteMoveSound();
+  updateUI();
+  requestRender();
+  if (game.gameOver) showResult();
+}
+
+// ---- 交互坐标转换 ----
+function getCanvasCoords(e) {
+  const rect = canvas.getBoundingClientRect();
+  let cx, cy;
+  if (e.changedTouches && e.changedTouches.length > 0) {
+    cx = e.changedTouches[0].clientX; cy = e.changedTouches[0].clientY;
+  } else if (e.touches && e.touches.length > 0) {
+    cx = e.touches[0].clientX; cy = e.touches[0].clientY;
+  } else {
+    cx = e.clientX; cy = e.clientY;
+  }
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  let px = (cx - rect.left) * scaleX;
+  let py = (cy - rect.top) * scaleY;
+  px = (px - renderer.transX) / renderer.scale;
+  py = (py - renderer.transY) / renderer.scale;
+  return {px, py};
+}
+
+function getNearestIntersection(e) {
+  const {px, py} = getCanvasCoords(e);
+  return renderer.canvasToPoint(px, py);
+}
+
+// ---- 鼠标事件 ----
+canvas.addEventListener('mousemove', e => {
+  if (game.gameOver) { renderer.ghostPos = null; requestRender(); return; }
+  const pt = getNearestIntersection(e);
+  if (pt && game.isValidMove(pt.r, pt.c)) {
+    renderer.ghostPos = {r: pt.r, c: pt.c, color: game.turn};
+  } else {
+    renderer.ghostPos = null;
+  }
+  requestRender();
+});
+
+canvas.addEventListener('mouseleave', () => {
+  renderer.ghostPos = null;
+  requestRender();
+});
+
+canvas.addEventListener('click', e => {
+  initAudio();
+  const pt = getNearestIntersection(e);
+  if (pt) doMove(pt.r, pt.c);
+});
+
+// ---- 触屏事件 ----
+let touchId = null;
+let pinchDist = 0;
+let pinchScale = 1;
+let isDragging = false;
+let dragStartX = 0, dragStartY = 0;
+let dragTransX = 0, dragTransY = 0;
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  initAudio();
+  if (e.touches.length === 1) {
+    touchId = e.touches[0].identifier;
+    const pt = getNearestIntersection(e);
+    if (pt && !game.gameOver) renderer.ghostPos = {r: pt.r, c: pt.c, color: game.turn};
+    isDragging = false;
+    dragStartX = e.touches[0].clientX;
+    dragStartY = e.touches[0].clientY;
+    dragTransX = renderer.transX;
+    dragTransY = renderer.transY;
+    requestRender();
+  } else if (e.touches.length === 2) {
+    const t1 = e.touches[0], t2 = e.touches[1];
+    pinchDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+    pinchScale = renderer.scale;
+  }
+}, {passive: false});
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    const dx = e.touches[0].clientX - dragStartX;
+    const dy = e.touches[0].clientY - dragStartY;
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) isDragging = true;
+    if (isDragging) {
+      renderer.transX = dragTransX + dx;
+      renderer.transY = dragTransY + dy;
+      renderer.ghostPos = null;
+    } else {
+      const pt = getNearestIntersection(e);
+      if (pt && !game.gameOver) renderer.ghostPos = {r: pt.r, c: pt.c, color: game.turn};
+    }
+    requestRender();
+  } else if (e.touches.length === 2) {
+    const t1 = e.touches[0], t2 = e.touches[1];
+    const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+    if (pinchDist > 0) {
+      renderer.scale = Math.max(0.5, Math.min(3, pinchScale * (dist / pinchDist)));
+      requestRender();
+    }
+  }
+}, {passive: false});
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (!isDragging && e.changedTouches.length === 1) {
+    const t = e.changedTouches[0];
+    if (t.identifier === touchId) {
+      const pt = getNearestIntersection(e);
+      if (pt) doMove(pt.r, pt.c);
+    }
+  }
+  renderer.ghostPos = null;
+  requestRender();
+}, {passive: false});
+
+// ---- 控制按钮 ----
+btnUndo.addEventListener('click', () => {
+  if (game.history.length === 0) return;
+  game.undo();
+  renderer.cachedTerritory = null;
+  if (renderer.showTerritory) renderer.cachedTerritory = game.computeTerritory();
+  updateUI();
+  requestRender();
+});
+
+btnPass.addEventListener('click', () => {
+  const over = game.pass();
+  renderer.cachedTerritory = null;
+  updateUI();
+  requestRender();
+  if (over) showResult();
+});
+
+btnTerritory.addEventListener('click', () => {
+  if (game.gameOver) return;
+  renderer.showTerritory = !renderer.showTerritory;
+  if (renderer.showTerritory) {
+    renderer.cachedTerritory = game.computeTerritory();
+  } else {
+    renderer.cachedTerritory = null;
+  }
+  updateUI();
+  requestRender();
+});
+
+btnResign.addEventListener('click', () => {
+  if (game.gameOver) return;
+  game.resign();
+  updateUI();
+  showResult();
+  requestRender();
+});
+
+btnRestart.addEventListener('click', () => {
+  resultOverlay.classList.remove('show');
+  game.reset();
+  renderer.scale = 1;
+  renderer.transX = 0;
+  renderer.transY = 0;
+  renderer.animating = null;
+  renderer.ghostPos = null;
+  renderer.showTerritory = false;
+  renderer.cachedTerritory = null;
+  game.computeValidMoves();
+  updateUI();
+  requestRender();
+});
+
+// ---- 结果弹窗 ----
+function showResult() {
+  const s = game.scores;
+  if (!s) return;
+  if (s.byResign) {
+    const winner = s.winner === 1 ? '黑棋' : '白棋';
+    resultTitle.textContent = `${s.resigner}认输，${winner}胜！`;
+    resultDetail.textContent = '';
+    resultBreakdown.textContent = '';
+  } else {
+    const winner = s.winner === 1 ? '黑棋' : '白棋';
+    const diff = (s.winner === 1 ? s.blackScore - s.whiteScore : s.whiteScore - s.blackScore);
+    resultTitle.textContent = `${winner}胜 ${diff.toFixed(1)} 子`;
+    resultDetail.textContent = `黑 ${s.blackScore.toFixed(1)} 子 · 白 ${s.whiteScore.toFixed(1)} 子 (含贴目 ${s.komi})`;
+    resultBreakdown.textContent = `棋盘共 361 交叉点 · 中国规则数子法`;
+  }
+  resultOverlay.classList.add('show');
+}
+
+// ---- 主渲染循环 ----
+function tick() {
+  if (renderer.animating) {
+    const a = renderer.animating;
+    const elapsed = performance.now() - a.startTime;
+    a.progress = Math.min(1, elapsed / 200);
+    if (a.progress >= 1) renderer.animating = null;
+    needsRender = true;
+  }
+  if (needsRender) {
+    renderer.render();
+    needsRender = false;
+  }
+  requestAnimationFrame(tick);
+}
+
+// ---- 窗口调整 ----
+function resize() {
+  renderer.calcSize();
+  requestRender();
+}
+window.addEventListener('resize', resize);
+
+// ---- 键盘快捷键 ----
+document.addEventListener('keydown', e => {
+  if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); btnUndo.click(); }
+});
+
+// ============================================================
+// ====================== 5. 初始化 ============================
+// ============================================================
+function init() {
+  resize();
+  game.computeValidMoves();
+  updateUI();
+  tick();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+</script>
+</body>
+</html>
