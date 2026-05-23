@@ -41,6 +41,16 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 #result-box .detail{font-size:14px;color:#8B7355;margin-top:12px}
 #result-box button{margin-top:20px;padding:10px 36px;border:none;border-radius:8px;font-size:16px;font-weight:600;color:#fff;background:linear-gradient(135deg,#8B6914,#A07818);cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.3)}
 #result-box button:active{transform:scale(.95)}
+
+/* ===== 棋盘大小选择 ===== */
+#size-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:200;align-items:center;justify-content:center}
+#size-overlay.show{display:flex}
+#size-box{background:linear-gradient(135deg,#F5E6C8,#E8D5A8);border-radius:16px;padding:36px 44px;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,.5);max-width:90vw}
+#size-box h2{font-size:22px;color:#3A2A1A;margin-bottom:4px}
+#size-box p{font-size:14px;color:#8B7355;margin-bottom:20px}
+.size-btn{display:block;width:220px;padding:12px 0;margin:10px auto;border:none;border-radius:10px;font-size:20px;font-weight:700;color:#fff;background:linear-gradient(135deg,#8B6914,#A07818);cursor:pointer;box-shadow:0 3px 8px rgba(0,0,0,.25);transition:transform .1s}
+.size-btn:active{transform:scale(.95)}
+.size-btn .sub{display:block;font-size:12px;font-weight:400;opacity:.7;margin-top:2px}
 </style>
 </head>
 <body>
@@ -53,6 +63,9 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
   <div class="capture-info">
     <span>⚫ 提子: <strong id="black-cap">0</strong></span>
     <span>⚪ 提子: <strong id="white-cap">0</strong></span>
+    <span id="score-display" style="display:none;margin-left:10px;padding:2px 10px;background:rgba(255,255,255,.15);border-radius:6px;font-size:13px;">
+      📊 目数: ⚫<strong id="black-score">0</strong> | ⚪<strong id="white-score">0</strong> <small style="opacity:.7;">(贴7.5)</small>
+    </span>
   </div>
 </div>
 
@@ -65,7 +78,9 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
   <button id="btn-undo">⟲ 悔棋</button>
   <button id="btn-pass">停一手</button>
   <button id="btn-territory">🏁 领地</button>
+  <button id="btn-count">📊 目数</button>
   <button id="btn-resign">🏳 认输</button>
+  <button id="btn-count-result">🔢 数子结算</button>
 </div>
 
 <div id="result-overlay">
@@ -77,13 +92,23 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
   </div>
 </div>
 
+<div id="size-overlay">
+  <div id="size-box">
+    <h2>选择棋盘大小</h2>
+    <p>围棋对弈</p>
+    <button class="size-btn" data-size="9">9 ✕ 9<span class="sub">9路 · 入门</span></button>
+    <button class="size-btn" data-size="13">13 ✕ 13<span class="sub">13路 · 中级</span></button>
+    <button class="size-btn" data-size="19">19 ✕ 19<span class="sub">19路 · 标准</span></button>
+  </div>
+</div>
+
 <script>
 // ============================================================
 // ====================== 1. 围棋规则引擎 ======================
 // ============================================================
 class GoGame {
-  constructor() {
-    this.N = 19;
+  constructor(N) {
+    this.N = N || 19;
     this.reset();
   }
 
@@ -306,35 +331,7 @@ class GoGame {
 
   calculateScore() {
     const N = this.N;
-    const visited = Array.from({length: N}, () => Array(N).fill(false));
-    this.territory = Array.from({length: N}, () => Array(N).fill(0));
-
-    for (let r = 0; r < N; r++) {
-      for (let c = 0; c < N; c++) {
-        if (this.board[r][c] === 0 && !visited[r][c]) {
-          const group = [];
-          const borders = new Set();
-          const stack = [[r, c]];
-          visited[r][c] = true;
-          while (stack.length) {
-            const [cr, cc] = stack.pop();
-            group.push([cr, cc]);
-            for (const [nr, nc] of this.neighbors(cr, cc)) {
-              if (this.board[nr][nc] === 0 && !visited[nr][nc]) {
-                visited[nr][nc] = true;
-                stack.push([nr, nc]);
-              } else if (this.board[nr][nc] !== 0) {
-                borders.add(this.board[nr][nc]);
-              }
-            }
-          }
-          if (borders.size === 1) {
-            const owner = [...borders][0];
-            group.forEach(([tr, tc]) => { this.territory[tr][tc] = owner; });
-          }
-        }
-      }
-    }
+    this.territory = this.computeTerritoryImproved(this.board);
 
     let bs = 0, ws = 0;
     for (let r = 0; r < N; r++) {
@@ -358,38 +355,126 @@ class GoGame {
     return this.scores;
   }
 
-  // 计算当前领地（不计分，仅预览）
-  computeTerritory() {
+  // 改进的领地计算：先移除"死子"再数空
+  // 死子判定：气≤1 或 所有紧邻空点均被对方包围
+  computeTerritoryImproved(boardSrc) {
     const N = this.N;
-    const visited = Array.from({length: N}, () => Array(N).fill(false));
+    const src = boardSrc || this.board;
+    // 工作棋盘，死子将被移除
+    const work = src.map(row => [...row]);
+
+    // 迭代移除死子（最多 5 轮）
+    for (let iter = 0; iter < 5; iter++) {
+      const visited = new Set();
+      const toRemove = [];
+
+      for (let r = 0; r < N; r++) {
+        for (let c = 0; c < N; c++) {
+          if (work[r][c] !== 0 && !visited.has(r * N + c)) {
+            const color = work[r][c];
+            const group = [];
+            const stack = [[r, c]];
+            visited.add(r * N + c);
+            while (stack.length) {
+              const [gr, gc] = stack.pop();
+              group.push([gr, gc]);
+              for (const [nr, nc] of this.neighbors(gr, gc)) {
+                if (work[nr][nc] === color && !visited.has(nr * N + nc)) {
+                  visited.add(nr * N + nc);
+                  stack.push([nr, nc]);
+                }
+              }
+            }
+
+            // 计算气
+            const libs = new Set();
+            for (const [gr, gc] of group) {
+              for (const [nr, nc] of this.neighbors(gr, gc)) {
+                if (work[nr][nc] === 0) libs.add(nr * N + nc);
+              }
+            }
+
+            if (libs.size === 0) {
+              toRemove.push(...group);
+              continue;
+            }
+
+            if (libs.size === 1) {
+              toRemove.push(...group);
+              continue;
+            }
+
+            // 检查所有空邻是否都被对方"包围"
+            const opp = color === 1 ? 2 : 1;
+            let allLibsOpp = true;
+            for (const libKey of libs) {
+              const lr = Math.floor(libKey / N);
+              const lc = libKey % N;
+              // 从该空点出发 flood fill，看是否只与对方棋子相邻
+              const seen = new Set();
+              const eq = [[lr, lc]];
+              seen.add(libKey);
+              let onlyOpp = true;
+              while (eq.length) {
+                const [er, ec] = eq.pop();
+                for (const [nr, nc] of this.neighbors(er, ec)) {
+                  if (work[nr][nc] === 0 && !seen.has(nr * N + nc)) {
+                    seen.add(nr * N + nc);
+                    eq.push([nr, nc]);
+                  } else if (work[nr][nc] !== 0 && work[nr][nc] !== opp) {
+                    onlyOpp = false;
+                  }
+                }
+              }
+              if (!onlyOpp) { allLibsOpp = false; break; }
+            }
+
+            if (allLibsOpp) {
+              toRemove.push(...group);
+            }
+          }
+        }
+      }
+
+      if (toRemove.length === 0) break;
+      for (const [rr, rc] of toRemove) work[rr][rc] = 0;
+    }
+
+    // 在清理后的棋盘上做标准 flood fill 领地计算
+    const visited2 = Array.from({length: N}, () => Array(N).fill(false));
     const terr = Array.from({length: N}, () => Array(N).fill(0));
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
-        if (this.board[r][c] === 0 && !visited[r][c]) {
-          const group = [];
+        if (work[r][c] === 0 && !visited2[r][c]) {
+          const eg = [];
           const borders = new Set();
           const stack = [[r, c]];
-          visited[r][c] = true;
+          visited2[r][c] = true;
           while (stack.length) {
             const [cr, cc] = stack.pop();
-            group.push([cr, cc]);
+            eg.push([cr, cc]);
             for (const [nr, nc] of this.neighbors(cr, cc)) {
-              if (this.board[nr][nc] === 0 && !visited[nr][nc]) {
-                visited[nr][nc] = true;
+              if (work[nr][nc] === 0 && !visited2[nr][nc]) {
+                visited2[nr][nc] = true;
                 stack.push([nr, nc]);
-              } else if (this.board[nr][nc] !== 0) {
-                borders.add(this.board[nr][nc]);
+              } else if (work[nr][nc] !== 0) {
+                borders.add(work[nr][nc]);
               }
             }
           }
           if (borders.size === 1) {
             const owner = [...borders][0];
-            group.forEach(([tr, tc]) => { terr[tr][tc] = owner; });
+            eg.forEach(([tr, tc]) => { terr[tr][tc] = owner; });
           }
         }
       }
     }
     return terr;
+  }
+
+  // 计算当前领地（不计分，仅预览）
+  computeTerritory() {
+    return this.computeTerritoryImproved(this.board);
   }
 }
 
@@ -468,7 +553,7 @@ class BoardRenderer {
     this.PAD = this.CELL;
     this.STONE_R = this.CELL * 0.44;
     this.libertyFontSize = Math.max(11, Math.round(this.CELL * 0.48));
-    this.W = 18 * this.CELL + 2 * this.PAD;
+    this.W = (this.N - 1) * this.CELL + 2 * this.PAD;
     this.H = this.W;
     this.canvas.width = this.W;
     this.canvas.height = this.H;
@@ -518,19 +603,42 @@ class BoardRenderer {
 
   drawGrid() {
     const ctx = this.ctx;
+    const end = (this.N - 1) * this.CELL;
     ctx.strokeStyle = '#5C4033';
     ctx.lineWidth = 1;
     for (let i = 0; i < this.N; i++) {
       const p = this.PAD + i * this.CELL;
-      ctx.beginPath(); ctx.moveTo(this.PAD, p); ctx.lineTo(this.PAD + 18 * this.CELL, p); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(p, this.PAD); ctx.lineTo(p, this.PAD + 18 * this.CELL); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(this.PAD, p); ctx.lineTo(this.PAD + end, p); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p, this.PAD); ctx.lineTo(p, this.PAD + end); ctx.stroke();
     }
-    const stars = [[3,3],[3,9],[3,15],[9,3],[9,9],[9,15],[15,3],[15,9],[15,15]];
+    const stars = this.getStarPoints();
     ctx.fillStyle = '#5C4033';
     for (const [r, c] of stars) {
       const {x, y} = this.pointToCanvas(r, c);
       ctx.beginPath(); ctx.arc(x, y, this.CELL * 0.12, 0, Math.PI * 2); ctx.fill();
     }
+  }
+
+  getStarPoints() {
+    const N = this.N;
+    let positions;
+    if (N === 9) {
+      positions = [2, 4, 6];
+    } else if (N === 11) {
+      positions = [2, 5, 8];
+    } else if (N === 13) {
+      positions = [3, 6, 9];
+    } else {
+      const edge = Math.min(3, Math.floor((N - 1) / 6));
+      positions = [edge, Math.floor(N / 2), N - 1 - edge];
+    }
+    const pts = [];
+    for (const r of positions) {
+      for (const c of positions) {
+        pts.push([r, c]);
+      }
+    }
+    return pts;
   }
 
   drawStoneAt(r, c, color, ghost, scale_) {
@@ -690,7 +798,7 @@ class BoardRenderer {
 
     ctx.beginPath();
     ctx.rect(this.PAD - this.CELL*0.5, this.PAD - this.CELL*0.5,
-             18 * this.CELL + this.CELL, 18 * this.CELL + this.CELL);
+             this.N * this.CELL, this.N * this.CELL);
     ctx.clip();
 
     this.drawGrid();
@@ -814,8 +922,7 @@ let needsRender = true;
 function requestRender() { needsRender = true; }
 
 const canvas = document.getElementById('board');
-const game = new GoGame();
-const renderer = new BoardRenderer(canvas, game);
+let game, renderer;
 
 const turnDot = document.getElementById('turn-dot');
 const turnText = document.getElementById('turn-text');
@@ -831,6 +938,11 @@ const btnPass = document.getElementById('btn-pass');
 const btnTerritory = document.getElementById('btn-territory');
 const btnResign = document.getElementById('btn-resign');
 const btnRestart = document.getElementById('btn-restart');
+const btnCount = document.getElementById('btn-count');
+const btnCountResult = document.getElementById('btn-count-result');
+const scoreDisplay = document.getElementById('score-display');
+const blackScoreEl = document.getElementById('black-score');
+const whiteScoreEl = document.getElementById('white-score');
 
 // ---- 移动端检测 & 手指光标（CSS cursor + overlay 混合方案） ----
 const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
@@ -888,6 +1000,23 @@ fingerImg.onload = () => { fingerLoaded = true; };
 fingerImg.onerror = () => { fingerLoaded = false; };
 fingerImg.src = '手指.png';
 
+// ---- 更新目数显示 ----
+function updateScoreDisplay() {
+    const terr = game.computeTerritory();
+    let blackTerritory = 0, whiteTerritory = 0;
+    for (let r = 0; r < game.N; r++) {
+        for (let c = 0; c < game.N; c++) {
+            if (terr[r][c] === 1) blackTerritory++;
+            else if (terr[r][c] === 2) whiteTerritory++;
+        }
+    }
+    // 日本规则：目 = 领地空点 + 提子数
+    const bs = blackTerritory + (game.captures[1] || 0);
+    const ws = whiteTerritory + (game.captures[2] || 0) + 7.5;
+    blackScoreEl.textContent = bs;
+    whiteScoreEl.textContent = ws;
+}
+
 // ---- 更新 UI ----
 function updateUI() {
   const t = game.turn;
@@ -899,7 +1028,10 @@ function updateUI() {
   btnPass.disabled = game.gameOver;
   btnTerritory.disabled = game.gameOver;
   btnResign.disabled = game.gameOver;
+  btnCountResult.disabled = game.gameOver;
   btnTerritory.classList.toggle('active', renderer.showTerritory);
+  btnCount.classList.toggle('active', scoreDisplay.style.display !== 'none');
+  if (scoreDisplay.style.display !== 'none') updateScoreDisplay();
 }
 
 // ---- 执行落子 ----
@@ -1073,19 +1205,32 @@ btnResign.addEventListener('click', () => {
   requestRender();
 });
 
+btnCount.addEventListener('click', () => {
+  if (scoreDisplay.style.display === 'none') {
+    updateScoreDisplay();
+    scoreDisplay.style.display = 'inline';
+    btnCount.classList.add('active');
+  } else {
+    scoreDisplay.style.display = 'none';
+    btnCount.classList.remove('active');
+  }
+  updateUI();
+});
+
+btnCountResult.addEventListener('click', () => {
+  if (game.gameOver) return;
+  game.gameOver = true;
+  game.calculateScore();
+  renderer.cachedTerritory = game.territory;
+  renderer.showTerritory = false;
+  updateUI();
+  showResult();
+  requestRender();
+});
+
 btnRestart.addEventListener('click', () => {
   resultOverlay.classList.remove('show');
-  game.reset();
-  renderer.scale = 1;
-  renderer.transX = 0;
-  renderer.transY = 0;
-  renderer.animating = null;
-  renderer.ghostPos = null;
-  renderer.showTerritory = false;
-  renderer.cachedTerritory = null;
-  game.computeValidMoves();
-  updateUI();
-  requestRender();
+  sizeOverlay.classList.add('show');
 });
 
 // ---- 结果弹窗 ----
@@ -1109,22 +1254,25 @@ function showResult() {
 
 // ---- 主渲染循环 ----
 function tick() {
-  if (renderer.animating) {
-    const a = renderer.animating;
-    const elapsed = performance.now() - a.startTime;
-    a.progress = Math.min(1, elapsed / 200);
-    if (a.progress >= 1) renderer.animating = null;
-    needsRender = true;
-  }
-  if (needsRender) {
-    renderer.render();
-    needsRender = false;
+  if (renderer) {
+    if (renderer.animating) {
+      const a = renderer.animating;
+      const elapsed = performance.now() - a.startTime;
+      a.progress = Math.min(1, elapsed / 200);
+      if (a.progress >= 1) renderer.animating = null;
+      needsRender = true;
+    }
+    if (needsRender) {
+      renderer.render();
+      needsRender = false;
+    }
   }
   requestAnimationFrame(tick);
 }
 
 // ---- 窗口调整 ----
 function resize() {
+  if (!renderer) return;
   renderer.calcSize();
   requestRender();
 }
@@ -1138,17 +1286,31 @@ document.addEventListener('keydown', e => {
 // ============================================================
 // ====================== 5. 初始化 ============================
 // ============================================================
-function init() {
+const sizeOverlay = document.getElementById('size-overlay');
+
+function startGame(N) {
+  game = new GoGame(N);
+  renderer = new BoardRenderer(canvas, game);
+  sizeOverlay.classList.remove('show');
   resize();
   game.computeValidMoves();
   updateUI();
   tick();
 }
 
+document.querySelectorAll('.size-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const N = parseInt(btn.dataset.size);
+    startGame(N);
+  });
+});
+
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
+  document.addEventListener('DOMContentLoaded', () => {
+    sizeOverlay.classList.add('show');
+  });
 } else {
-  init();
+  sizeOverlay.classList.add('show');
 }
 </script>
 </body>
