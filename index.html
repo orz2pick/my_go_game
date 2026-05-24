@@ -1072,6 +1072,186 @@ function playInvalidSound() {
 }
 
 // ============================================================
+// ====================== 3b. BGM 背景音乐 =====================
+// ============================================================
+
+// 和弦频率表
+const NOTES = {
+  C3:130.81,Cs3:138.59,D3:146.83,Ds3:155.56,E3:164.81,F3:174.61,Fs3:185.00,G3:196.00,Gs3:207.65,A3:220.00,As3:233.08,B3:246.94,
+  C4:261.63,Cs4:277.18,D4:293.66,Ds4:311.13,E4:329.63,F4:349.23,Fs4:369.99,G4:392.00,Gs4:415.30,A4:440.00,As4:466.16,B4:493.88,
+  C5:523.25,Cs5:554.37,D5:587.33,Ds5:622.25,E5:659.25,F5:698.46,Fs5:739.99,G5:783.99,Gs5:830.61,A5:880.00
+};
+
+// Chora A — 棋局接近，四段和弦循环 (Cmaj7 → Dm7 → G7 → Cmaj7)
+const CHORDS_A = [
+  [NOTES.C4, NOTES.E4, NOTES.G4, NOTES.B4],
+  [NOTES.D4, NOTES.F4, NOTES.A4, NOTES.C5],
+  [NOTES.G4, NOTES.B4, NOTES.D5, NOTES.F5],
+  [NOTES.C4, NOTES.E4, NOTES.G4, NOTES.B4]
+];
+
+// Chora B — 黑棋明显领先，三段和弦循环 (C → F → G)
+const CHORDS_B = [
+  [NOTES.C3, NOTES.E3, NOTES.G3],
+  [NOTES.F3, NOTES.A3, NOTES.C4],
+  [NOTES.G3, NOTES.B3, NOTES.D4]
+];
+
+// Chora C — 打劫中，五段和弦循环 (Dm → G → C → Am → F)
+const CHORDS_C = [
+  [NOTES.D4, NOTES.F4, NOTES.A4],
+  [NOTES.G4, NOTES.B4, NOTES.D5],
+  [NOTES.C4, NOTES.E4, NOTES.G4],
+  [NOTES.A3, NOTES.C4, NOTES.E4],
+  [NOTES.F4, NOTES.A4, NOTES.C5]
+];
+
+let bgmMode = 'A';
+let bgmPlaying = false;
+let bgmTimer = null;
+let bgmStarted = false;
+
+function getBGMChords() {
+  if (bgmMode === 'B') return CHORDS_B;
+  if (bgmMode === 'C') return CHORDS_C;
+  return CHORDS_A;
+}
+
+function getBGMChordDuration() {
+  if (bgmMode === 'B') return 2.0;
+  if (bgmMode === 'C') return 0.9;
+  return 1.5;
+}
+
+function getBGMGain() {
+  if (bgmMode === 'B') return 0.09;
+  if (bgmMode === 'C') return 0.10;
+  return 0.06;
+}
+
+function determineBGMMode() {
+  if (!game) return 'A';
+  if (game.gameOver) return bgmMode; // 终局保持当前模式
+
+  // 打劫检测
+  if (game.koPoint) return 'C';
+
+  // 粗略估算局面：子数 + 提子
+  const N = game.N;
+  const bd = game.board;
+  let bs = 0, ws = 0;
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (bd[r][c] === 1) bs++;
+      else if (bd[r][c] === 2) ws++;
+    }
+  }
+  bs += game.captures[1] || 0;
+  ws += game.captures[2] || 0;
+
+  // 实空约估：简单 flood fill 看边界
+  const visited = Array.from({length: N}, () => Array(N).fill(false));
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (bd[r][c] === 0 && !visited[r][c]) {
+        const borders = new Set();
+        const stack = [[r, c]];
+        visited[r][c] = true;
+        while (stack.length) {
+          const [cr, cc] = stack.pop();
+          for (const [nr, nc] of game.neighbors(cr, cc)) {
+            if (bd[nr][nc] === 0 && !visited[nr][nc]) {
+              visited[nr][nc] = true;
+              stack.push([nr, nc]);
+            } else if (bd[nr][nc] !== 0) {
+              borders.add(bd[nr][nc]);
+            }
+          }
+        }
+        if (borders.size === 1) {
+          const owner = [...borders][0];
+          // 粗略：该空域大小约等于 territory 分
+          if (owner === 1) bs += 3;
+          else ws += 3;
+        }
+      }
+    }
+  }
+
+  const diff = bs - ws;
+  // 领先阈值：约 2/3 路数
+  const threshold = Math.max(6, N * 0.5);
+  if (diff > threshold) return 'B';
+  return 'A';
+}
+
+function playBGMLoop() {
+  if (!bgmPlaying || !audioCtx) return;
+
+  // 检测模式变化
+  const newMode = determineBGMMode();
+  if (newMode !== bgmMode) {
+    bgmMode = newMode;
+    // 切换模式直接重新开始循环
+  }
+
+  const chords = getBGMChords();
+  const dur = getBGMChordDuration();
+  const gain = getBGMGain();
+  let idx = 0;
+
+  function scheduleNext() {
+    if (!bgmPlaying || !audioCtx) return;
+
+    // 每轮重新检测模式
+    const m = determineBGMMode();
+    if (m !== bgmMode) {
+      bgmMode = m;
+      // 重新调度新循环
+      clearTimeout(bgmTimer);
+      playBGMLoop();
+      return;
+    }
+
+    const now = audioCtx.currentTime;
+    playChord(chords[idx], now, dur * 0.85, gain);
+    idx = (idx + 1) % chords.length;
+    bgmTimer = setTimeout(scheduleNext, dur * 1000);
+  }
+
+  scheduleNext();
+}
+
+function startBGM() {
+  if (bgmPlaying) return;
+  if (!audioCtx) {
+    try { initAudio(); } catch(e) { return; }
+    if (!audioCtx) return;
+  }
+  bgmPlaying = true;
+  bgmMode = determineBGMMode();
+  playBGMLoop();
+  bgmStarted = true;
+}
+
+function stopBGM() {
+  bgmPlaying = false;
+  bgmStarted = false;
+  if (bgmTimer) { clearTimeout(bgmTimer); bgmTimer = null; }
+}
+
+function updateBGM() {
+  if (!bgmPlaying) return;
+  // 检测模式变化（playBGMLoop 内部每轮也会检测，这里额外触发切换）
+  const m = determineBGMMode();
+  if (m !== bgmMode) {
+    bgmMode = m;
+    if (bgmTimer) { clearTimeout(bgmTimer); bgmTimer = null; }
+    playBGMLoop();
+  }
+}
+
+// ============================================================
 // ====================== 4. 游戏控制器 ========================
 // ============================================================
 let needsRender = true;
@@ -1229,9 +1409,12 @@ function doMove(r, c) {
   renderer.cachedTerritory = null;
   if (clr === 1) playBlackMoveSound(); else playWhiteMoveSound();
   if (isTouchDevice) showFingerOverlay(r, c);
+  // 首手启动 BGM
+  if (!bgmStarted && game.history.length >= 1) startBGM();
+  else updateBGM();
   updateUI();
   requestRender();
-  if (game.gameOver) { showResult(); return; }
+  if (game.gameOver) { stopBGM(); showResult(); return; }
   // AI 回合 → 自动触发
   if (aiEnabled && game.turn === aiColor && !game.gameOver) {
     scheduleAIMove();
@@ -1257,26 +1440,25 @@ function doAIMove() {
   aiThinking_ = false;
   aiOverlay.classList.remove('show');
   if (move) {
-    // AI 落子用白棋音效（白子默认）或根据颜色选择
     const clr = game.turn;
     game.placeStone(move.r, move.c);
     renderer.startAnimation(move.r, move.c, clr);
     renderer.cachedTerritory = null;
     if (clr === 1) playBlackMoveSound(); else playWhiteMoveSound();
+    if (!bgmStarted) startBGM(); else updateBGM();
     updateUI();
     requestRender();
-    if (game.gameOver) { showResult(); return; }
-    // 如果 AI 连续下（AI vs AI），继续
+    if (game.gameOver) { stopBGM(); showResult(); return; }
     if (aiEnabled && game.turn === aiColor && !game.gameOver) {
       scheduleAIMove();
     }
   } else {
-    // AI 停一手
     const over = game.pass();
     renderer.cachedTerritory = null;
+    updateBGM();
     updateUI();
     requestRender();
-    if (over) showResult();
+    if (over) { stopBGM(); showResult(); }
   }
 }
 
@@ -1565,6 +1747,7 @@ btnUndo.addEventListener('click', () => {
   game.undo();
   renderer.cachedTerritory = null;
   if (renderer.showTerritory) renderer.cachedTerritory = game.computeTerritory();
+  updateBGM();
   updateUI();
   requestRender();
   if (aiEnabled && game.turn === aiColor && !game.gameOver) scheduleAIMove();
@@ -1574,9 +1757,10 @@ btnPass.addEventListener('click', () => {
   if (aiThinking_) return;
   const over = game.pass();
   renderer.cachedTerritory = null;
+  updateBGM();
   updateUI();
   requestRender();
-  if (over) { showResult(); return; }
+  if (over) { stopBGM(); showResult(); return; }
   if (aiEnabled && game.turn === aiColor) scheduleAIMove();
 });
 
@@ -1595,6 +1779,7 @@ btnTerritory.addEventListener('click', () => {
 btnResign.addEventListener('click', () => {
   if (game.gameOver) return;
   game.resign();
+  stopBGM();
   updateUI();
   showResult();
   requestRender();
@@ -1618,6 +1803,7 @@ btnCountResult.addEventListener('click', () => {
   game.calculateScore();
   renderer.cachedTerritory = game.territory;
   renderer.showTerritory = false;
+  stopBGM();
   updateUI();
   showResult();
   requestRender();
