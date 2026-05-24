@@ -1508,46 +1508,41 @@ function playChord(freqs, startTime, duration, gain) {
   freqs.forEach(f => playPianoNote(f, startTime, duration, gain));
 }
 
-// 黑棋落子：两个低音和弦 (Cmaj → Gmaj, C3 八度)
+// 黑棋落子：两个低音电子脉冲
 function playBlackMoveSound() {
   try {
     initAudio();
     const now = audioCtx.currentTime;
-    // 和弦1: Cmaj (C3+E3+G3)
-    playChord([130.81, 164.81, 196.00], now, 0.28, 0.13);
-    // 和弦2: Gmaj (G3+B3+D4)，与前和弦有重叠
-    playChord([196.00, 246.94, 293.66], now + 0.14, 0.32, 0.11);
+    playLeadNote(130.81, now, 0.12, 0.12);
+    playLeadNote(196.00, now + 0.08, 0.15, 0.10);
   } catch(e) {}
 }
 
-// 白棋落子：两个高音和弦 (Cmaj → Gmaj, C4 八度)
+// 白棋落子：两个高音电子脉冲
 function playWhiteMoveSound() {
   try {
     initAudio();
     const now = audioCtx.currentTime;
-    // 和弦1: Cmaj (C4+E4+G4)
-    playChord([261.63, 329.63, 392.00], now, 0.25, 0.14);
-    // 和弦2: Gmaj (G4+B4+D5)
-    playChord([392.00, 493.88, 587.33], now + 0.12, 0.28, 0.12);
+    playLeadNote(261.63, now, 0.1, 0.13);
+    playLeadNote(392.00, now + 0.07, 0.12, 0.11);
   } catch(e) {}
 }
 
-// 非法落子音效：轻柔短促的 "boop"
+// 非法落子音效：短促电子 "blip"
 function playInvalidSound() {
   try {
     initAudio();
     const now = audioCtx.currentTime;
-    // 一个快速下行的柔和音
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.connect(gain); gain.connect(audioCtx.destination);
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(380, now);
-    osc.frequency.exponentialRampToValueAtTime(240, now + 0.1);
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(660, now);
+    osc.frequency.exponentialRampToValueAtTime(220, now + 0.06);
     gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.12, now + 0.005);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-    osc.start(now); osc.stop(now + 0.15);
+    gain.gain.linearRampToValueAtTime(0.08, now + 0.003);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+    osc.start(now); osc.stop(now + 0.1);
   } catch(e) {}
 }
 
@@ -1743,11 +1738,11 @@ function playStinger() {
   try {
     initAudio();
     const now = audioCtx.currentTime;
-    playChord([NOTES.C4,NOTES.E4,NOTES.G4,NOTES.C5], now, 0.6, 0.18);
-    playChord([NOTES.G4,NOTES.B4,NOTES.D5,NOTES.G5], now + 0.1, 0.5, 0.14);
-    playKick(now, 0.35);
-    playKick(now + 0.4, 0.25);
-    playSnare(now + 0.2, 0.20);
+    playLeadNote(NOTES.C5, now, 0.3, 0.16);
+    playLeadNote(NOTES.G5, now + 0.06, 0.25, 0.14);
+    playKick(now, 0.4);
+    playKick(now + 0.3, 0.3);
+    playSnare(now + 0.15, 0.25);
   } catch(e) {}
 }
 
@@ -1777,7 +1772,7 @@ function playBGMLoop() {
     if (cfg.hihat.includes(b)) playHihat(t, cfg.drumGain * 0.4);
     // 旋律（支持半拍 .5）
     for (const [beat, freq, dur] of cfg.melody) {
-      if (Math.abs(beat - b) < 0.01) playPianoNote(freq, t, dur * beatSec, cfg.melodyGain);
+      if (Math.abs(beat - b) < 0.01) playLeadNote(freq, t, dur * beatSec, cfg.melodyGain);
     }
   }
   // 八分音符补充（melody / hihat 用 .5 拍）
@@ -1785,7 +1780,7 @@ function playBGMLoop() {
     const t = now + (b + 0.5) * beatSec;
     if (cfg.hihat.includes(b + 0.5)) playHihat(t, cfg.drumGain * 0.4);
     for (const [beat, freq, dur] of cfg.melody) {
-      if (Math.abs(beat - (b + 0.5)) < 0.01) playPianoNote(freq, t, dur * beatSec, cfg.melodyGain);
+      if (Math.abs(beat - (b + 0.5)) < 0.01) playLeadNote(freq, t, dur * beatSec, cfg.melodyGain);
     }
   }
 
