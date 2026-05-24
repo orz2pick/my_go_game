@@ -1478,10 +1478,26 @@ function playPianoNote(freq, startTime, duration, gain) {
   const gainNode = audioCtx.createGain();
   osc.connect(gainNode);
   gainNode.connect(audioCtx.destination);
-  osc.type = 'sine';
+  osc.type = 'triangle';
   osc.frequency.setValueAtTime(freq, startTime);
   gainNode.gain.setValueAtTime(0, startTime);
-  gainNode.gain.linearRampToValueAtTime(gain || 0.25, startTime + 0.008);
+  gainNode.gain.linearRampToValueAtTime(gain || 0.25, startTime + 0.004);
+  gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+  osc.start(startTime);
+  osc.stop(startTime + duration);
+}
+
+// 电子游戏风格主旋律（方波 lead）
+function playLeadNote(freq, startTime, duration, gain) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  osc.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(freq, startTime);
+  gainNode.gain.setValueAtTime(0, startTime);
+  gainNode.gain.linearRampToValueAtTime(gain || 0.15, startTime + 0.003);
   gainNode.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
   osc.start(startTime);
   osc.stop(startTime + duration);
@@ -1545,36 +1561,49 @@ const NOTES = {
   C5:523.25,Cs5:554.37,D5:587.33,Ds5:622.25,E5:659.25,F5:698.46,Fs5:739.99,G5:783.99,Gs5:830.61,A5:880.00
 };
 
-// ——— 鼓合成 ———
+// ——— 电子鼓合成（808 风格） ———
 function playKick(t, g) {
   if (!audioCtx) return;
   const o = audioCtx.createOscillator(), gn = audioCtx.createGain();
   o.connect(gn); gn.connect(audioCtx.destination);
-  o.type = 'sine'; o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(35, t + 0.12);
-  gn.gain.setValueAtTime(g||0.25, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-  o.start(t); o.stop(t + 0.18);
+  o.type = 'sine'; o.frequency.setValueAtTime(160, t); o.frequency.exponentialRampToValueAtTime(40, t + 0.1);
+  gn.gain.setValueAtTime(g||0.3, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+  o.start(t); o.stop(t + 0.3);
+  // Click transient
+  const buf = audioCtx.createBuffer(1, Math.ceil(audioCtx.sampleRate * 0.004), audioCtx.sampleRate);
+  const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  const click = audioCtx.createBufferSource(); click.buffer = buf;
+  const cg = audioCtx.createGain();
+  click.connect(cg); cg.connect(audioCtx.destination);
+  cg.gain.setValueAtTime(g * 0.5 || 0.12, t); cg.gain.exponentialRampToValueAtTime(0.001, t + 0.008);
+  click.start(t); click.stop(t + 0.01);
 }
 function playSnare(t, g) {
   if (!audioCtx) return;
-  const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.12, audioCtx.sampleRate);
+  const o = audioCtx.createOscillator(), og = audioCtx.createGain();
+  o.connect(og); og.connect(audioCtx.destination);
+  o.type = 'square'; o.frequency.setValueAtTime(160, t); o.frequency.exponentialRampToValueAtTime(70, t + 0.05);
+  og.gain.setValueAtTime(g * 0.45 || 0.1, t); og.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+  o.start(t); o.stop(t + 0.08);
+  const buf = audioCtx.createBuffer(1, Math.ceil(audioCtx.sampleRate * 0.08), audioCtx.sampleRate);
   const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   const n = audioCtx.createBufferSource(); n.buffer = buf;
-  const f = audioCtx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 1200;
+  const f = audioCtx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 600;
   const gn = audioCtx.createGain();
   n.connect(f); f.connect(gn); gn.connect(audioCtx.destination);
-  gn.gain.setValueAtTime(g||0.18, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
-  n.start(t); n.stop(t + 0.12);
+  gn.gain.setValueAtTime(g * 0.55 || 0.12, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+  n.start(t); n.stop(t + 0.08);
 }
 function playHihat(t, g) {
   if (!audioCtx) return;
-  const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.06, audioCtx.sampleRate);
+  const buf = audioCtx.createBuffer(1, Math.ceil(audioCtx.sampleRate * 0.03), audioCtx.sampleRate);
   const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   const n = audioCtx.createBufferSource(); n.buffer = buf;
-  const f = audioCtx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 6000;
+  const f = audioCtx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 9000; f.Q.value = 0.5;
   const gn = audioCtx.createGain();
   n.connect(f); f.connect(gn); gn.connect(audioCtx.destination);
-  gn.gain.setValueAtTime(g||0.10, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
-  n.start(t); n.stop(t + 0.06);
+  gn.gain.setValueAtTime(g||0.10, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.025);
+  n.start(t); n.stop(t + 0.03);
 }
 
 // ——— 和弦 ———
