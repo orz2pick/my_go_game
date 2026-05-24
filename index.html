@@ -59,6 +59,28 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 #ai-overlay span{color:#fff;font-size:16px;font-weight:600;margin-top:14px;text-shadow:0 1px 4px rgba(0,0,0,.5);letter-spacing:1px}
 @keyframes ai-spin{to{transform:rotate(360deg)}}
 
+/* ===== 左侧棋局列表侧边栏 ===== */
+#sidebar-backdrop{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.35);z-index:148}
+#sidebar-backdrop.show{display:block}
+#sidebar{position:fixed;top:0;left:0;width:280px;height:100%;background:linear-gradient(180deg,#4A3728,#3A2A1A);z-index:150;transform:translateX(-100%);transition:transform .3s ease;box-shadow:2px 0 16px rgba(0,0,0,.5);display:flex;flex-direction:column}
+#sidebar.open{transform:translateX(0)}
+#sidebar-toggle{position:fixed;top:50%;left:0;transform:translateY(-50%);z-index:151;width:30px;height:72px;border:none;border-radius:0 8px 8px 0;background:linear-gradient(135deg,#8B6914,#A07818);color:#fff;font-size:16px;cursor:pointer;box-shadow:2px 0 6px rgba(0,0,0,.3);transition:left .3s ease;display:flex;align-items:center;justify-content:center;writing-mode:vertical-lr;letter-spacing:4px;padding:0 2px}
+#sidebar.open ~ #sidebar-toggle{left:280px}
+#sidebar-toggle:active{transform:translateY(-50%) scale(.95)}
+#sidebar-header{padding:14px 16px;color:#F5E6C8;font-size:15px;font-weight:700;border-bottom:1px solid rgba(255,255,255,.08);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+#sidebar-header small{font-size:11px;font-weight:400;opacity:.5}
+#sidebar-list{flex:1;overflow-y:auto;padding:8px}
+#sidebar-list::-webkit-scrollbar{width:4px}
+#sidebar-list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:2px}
+.sidebar-item{padding:10px 12px;margin:4px 0;border-radius:8px;background:rgba(255,255,255,.06);cursor:pointer;transition:background .15s;color:#ddd;font-size:13px;display:flex;align-items:center;gap:8px}
+.sidebar-item:hover{background:rgba(255,255,255,.12)}
+.sidebar-item .info{flex:1;min-width:0}
+.sidebar-item .info .name{font-weight:600;color:#F5E6C8;font-size:13px}
+.sidebar-item .info .meta{font-size:11px;opacity:.5;margin-top:2px}
+.sidebar-item .del{background:none;border:none;color:rgba(255,100,100,.5);font-size:15px;cursor:pointer;padding:2px 4px;border-radius:4px;line-height:1;flex-shrink:0}
+.sidebar-item .del:hover{color:#ff6b6b;background:rgba(255,100,100,.15)}
+.sidebar-empty{padding:32px 16px;text-align:center;color:rgba(255,255,255,.25);font-size:13px;line-height:1.6}
+
 /* ===== AI / 保存 / 读取 ===== */
 #bottom-bar .sep{width:1px;height:28px;background:rgba(255,255,255,.15);margin:0 4px;align-self:center}
 #bottom-bar .btn-ai{background:linear-gradient(135deg,#556B2F,#6B8E23)}
@@ -94,6 +116,18 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
   </div>
   <img id="hand-cursor" src="手指.png" alt="" draggable="false">
 </div>
+
+<div id="sidebar-backdrop"></div>
+<div id="sidebar">
+  <div id="sidebar-header">
+    <span>📋 棋局列表</span>
+    <small id="sidebar-count">0 局</small>
+  </div>
+  <div id="sidebar-list">
+    <div class="sidebar-empty">暂无保存的棋局<br>对局中点击 💾 保存</div>
+  </div>
+</div>
+<button id="sidebar-toggle">棋局</button>
 
 <div id="bottom-bar">
   <button id="btn-undo">⟲ 悔棋</button>
@@ -1067,6 +1101,11 @@ const btnSave = document.getElementById('btn-save');
 const btnLoad = document.getElementById('btn-load');
 const aiThinking = document.getElementById('ai-thinking');
 const aiOverlay = document.getElementById('ai-overlay');
+const sidebar = document.getElementById('sidebar');
+const sidebarToggle = document.getElementById('sidebar-toggle');
+const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+const sidebarList = document.getElementById('sidebar-list');
+const sidebarCount = document.getElementById('sidebar-count');
 const scoreDisplay = document.getElementById('score-display');
 const blackScoreEl = document.getElementById('black-score');
 const whiteScoreEl = document.getElementById('white-score');
@@ -1241,9 +1280,23 @@ function doAIMove() {
   }
 }
 
-// ---- 棋局保存 / 读取 ----
+// ---- 棋局保存 / 读取 / 侧边栏 ----
+const SAVE_INDEX_KEY = 'go-saves-index';
+
+function getSavesIndex() {
+  try {
+    const raw = localStorage.getItem(SAVE_INDEX_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch(e) { return []; }
+}
+
+function setSavesIndex(idx) {
+  localStorage.setItem(SAVE_INDEX_KEY, JSON.stringify(idx));
+}
+
 function saveGame() {
   try {
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     const data = {
       N: game.N,
       board: game.board,
@@ -1259,35 +1312,49 @@ function saveGame() {
       aiEnabled: aiEnabled,
       aiColor: aiColor
     };
-    localStorage.setItem('go-save', JSON.stringify(data));
+    localStorage.setItem('go-save-' + id, JSON.stringify(data));
+
+    const idx = getSavesIndex();
+    const now = new Date();
+    const label = '棋局 #' + (idx.length + 1);
+    idx.unshift({
+      id: id,
+      timestamp: now.getTime(),
+      label: label,
+      N: game.N,
+      moveCount: game.history.length,
+      turn: game.turn
+    });
+    setSavesIndex(idx);
+    refreshSidebar();
     showToast('棋局已保存');
   } catch(e) {
     showToast('保存失败: ' + e.message);
   }
 }
 
-function loadGame() {
+function loadGame(id) {
   try {
-    const raw = localStorage.getItem('go-save');
+    const key = id ? 'go-save-' + id : 'go-save';
+    const raw = localStorage.getItem(key);
     if (!raw) { showToast('没有找到存档'); return false; }
     const data = JSON.parse(raw);
     if (!data.N || !data.board) { showToast('存档数据损坏'); return false; }
 
-    // 重新创建游戏 & 渲染器
     resultOverlay.classList.remove('show');
+    if (game) { aiOverlay.classList.remove('show'); }
     game = new GoGame(data.N);
     game.restore(data);
     renderer = new BoardRenderer(canvas, game);
     aiEnabled = data.aiEnabled || false;
     aiColor = data.aiColor || 2;
     aiThinking_ = false;
-    aiOverlay.classList.remove('show');
     if (aiMoveTimer) { clearTimeout(aiMoveTimer); aiMoveTimer = null; }
     resize();
     updateUI();
     requestRender();
+    closeSidebar();
     showToast('棋局已读取');
-    // 如果轮到 AI，自动触发
     if (aiEnabled && game.turn === aiColor && !game.gameOver) {
       scheduleAIMove();
     }
@@ -1296,6 +1363,68 @@ function loadGame() {
     showToast('读取失败: ' + e.message);
     return false;
   }
+}
+
+function deleteSave(id) {
+  try {
+    localStorage.removeItem('go-save-' + id);
+    let idx = getSavesIndex();
+    idx = idx.filter(s => s.id !== id);
+    setSavesIndex(idx);
+    refreshSidebar();
+    showToast('已删除');
+  } catch(e) {
+    showToast('删除失败');
+  }
+}
+
+function refreshSidebar() {
+  const idx = getSavesIndex();
+  sidebarCount.textContent = idx.length + ' 局';
+  if (idx.length === 0) {
+    sidebarList.innerHTML = '<div class="sidebar-empty">暂无保存的棋局<br>对局中点击 💾 保存</div>';
+    return;
+  }
+  sidebarList.innerHTML = idx.map(s => {
+    const sizeLabel = s.N + '×' + s.N;
+    const d = new Date(s.timestamp);
+    const dateStr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+    const turnLabel = s.turn === 1 ? '黑棋' : '白棋';
+    return '<div class="sidebar-item" data-id="' + s.id + '">' +
+      '<div class="info">' +
+        '<div class="name">' + s.label + '</div>' +
+        '<div class="meta">' + sizeLabel + ' · ' + s.moveCount + '手 · ' + turnLabel + ' · ' + dateStr + '</div>' +
+      '</div>' +
+      '<button class="del" data-id="' + s.id + '">✕</button>' +
+    '</div>';
+  }).join('');
+
+  sidebarList.querySelectorAll('.sidebar-item').forEach(el => {
+    el.addEventListener('click', e => {
+      if (e.target.closest('.del')) return;
+      const id = el.dataset.id;
+      if (aiMoveTimer) { clearTimeout(aiMoveTimer); aiMoveTimer = null; }
+      aiThinking_ = false;
+      loadGame(id);
+    });
+  });
+  sidebarList.querySelectorAll('.del').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      deleteSave(btn.dataset.id);
+    });
+  });
+}
+
+function closeSidebar() {
+  sidebar.classList.remove('open');
+  sidebarBackdrop.classList.remove('show');
+}
+
+function toggleSidebar() {
+  const open = sidebar.classList.toggle('open');
+  sidebarBackdrop.classList.toggle('show', open);
+  if (open) refreshSidebar();
 }
 
 function showToast(msg) {
@@ -1504,11 +1633,11 @@ btnAI.addEventListener('click', () => {
 btnSave.addEventListener('click', saveGame);
 
 btnLoad.addEventListener('click', () => {
-  if (aiMoveTimer) { clearTimeout(aiMoveTimer); aiMoveTimer = null; }
-  aiThinking_ = false;
-  aiOverlay.classList.remove('show');
-  loadGame();
+  toggleSidebar();
 });
+
+sidebarToggle.addEventListener('click', toggleSidebar);
+sidebarBackdrop.addEventListener('click', closeSidebar);
 
 btnRestart.addEventListener('click', () => {
   resultOverlay.classList.remove('show');
@@ -1574,6 +1703,7 @@ function startGame(N) {
   game = new GoGame(N);
   renderer = new BoardRenderer(canvas, game);
   sizeOverlay.classList.remove('show');
+  closeSidebar();
   if (aiMoveTimer) { clearTimeout(aiMoveTimer); aiMoveTimer = null; }
   aiOverlay.classList.remove('show');
   aiEnabled = false;
@@ -1594,9 +1724,11 @@ document.querySelectorAll('.size-btn').forEach(btn => {
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', () => {
     sizeOverlay.classList.add('show');
+    refreshSidebar();
   });
 } else {
   sizeOverlay.classList.add('show');
+  refreshSidebar();
 }
 </script>
 </body>
