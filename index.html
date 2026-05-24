@@ -64,11 +64,11 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 /* ===== 左侧棋局列表侧边栏 ===== */
 #sidebar-backdrop{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.35);z-index:148}
 #sidebar-backdrop.show{display:block}
-#sidebar{position:fixed;top:0;left:0;width:280px;height:100%;background:linear-gradient(180deg,#4A3728,#3A2A1A);z-index:150;transform:translateX(-100%);transition:transform .3s ease;box-shadow:2px 0 16px rgba(0,0,0,.5);display:flex;flex-direction:column}
-#sidebar.open{transform:translateX(0)}
-#sidebar-toggle{position:fixed;top:50%;left:0;transform:translateY(-50%);z-index:151;width:30px;height:72px;border:none;border-radius:0 8px 8px 0;background:linear-gradient(135deg,#8B6914,#A07818);color:#fff;font-size:16px;cursor:pointer;box-shadow:2px 0 6px rgba(0,0,0,.3);transition:left .3s ease;display:flex;align-items:center;justify-content:center;writing-mode:vertical-lr;letter-spacing:4px;padding:0 2px}
-#sidebar.open ~ #sidebar-toggle{left:280px}
-#sidebar-toggle:active{transform:translateY(-50%) scale(.95)}
+#sidebar{position:fixed;top:44px;left:6px;width:280px;max-height:70vh;background:linear-gradient(180deg,#4A3728,#3A2A1A);z-index:150;transform:translateY(-120%);transition:transform .3s ease;box-shadow:0 6px 20px rgba(0,0,0,.55);border-radius:0 0 12px 12px;display:flex;flex-direction:column;overflow:hidden}
+#sidebar.open{transform:translateY(0)}
+#sidebar-toggle{position:fixed;top:44px;left:6px;z-index:151;width:auto;height:30px;padding:0 10px;border:none;border-radius:0 0 8px 8px;background:linear-gradient(135deg,#8B6914,#A07818);color:#fff;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.3);transition:opacity .2s;display:flex;align-items:center;gap:4px}
+#sidebar-toggle:hover{opacity:.85}
+#sidebar.open ~ #sidebar-toggle{opacity:0;pointer-events:none}
 #sidebar-header{padding:14px 16px;color:#F5E6C8;font-size:15px;font-weight:700;border-bottom:1px solid rgba(255,255,255,.08);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
 #sidebar-header small{font-size:11px;font-weight:400;opacity:.5}
 #sidebar-list{flex:1;overflow-y:auto;padding:8px}
@@ -1158,176 +1158,238 @@ function playInvalidSound() {
 // ====================== 3b. BGM 背景音乐 =====================
 // ============================================================
 
-// 和弦频率表
 const NOTES = {
   C3:130.81,Cs3:138.59,D3:146.83,Ds3:155.56,E3:164.81,F3:174.61,Fs3:185.00,G3:196.00,Gs3:207.65,A3:220.00,As3:233.08,B3:246.94,
   C4:261.63,Cs4:277.18,D4:293.66,Ds4:311.13,E4:329.63,F4:349.23,Fs4:369.99,G4:392.00,Gs4:415.30,A4:440.00,As4:466.16,B4:493.88,
   C5:523.25,Cs5:554.37,D5:587.33,Ds5:622.25,E5:659.25,F5:698.46,Fs5:739.99,G5:783.99,Gs5:830.61,A5:880.00
 };
 
-// Chora A — 棋局接近，四段和弦循环 (Cmaj7 → Dm7 → G7 → Cmaj7)
-const CHORDS_A = [
-  [NOTES.C4, NOTES.E4, NOTES.G4, NOTES.B4],
-  [NOTES.D4, NOTES.F4, NOTES.A4, NOTES.C5],
-  [NOTES.G4, NOTES.B4, NOTES.D5, NOTES.F5],
-  [NOTES.C4, NOTES.E4, NOTES.G4, NOTES.B4]
-];
-
-// Chora B — 黑棋明显领先，三段和弦循环 (C → F → G)
-const CHORDS_B = [
-  [NOTES.C3, NOTES.E3, NOTES.G3],
-  [NOTES.F3, NOTES.A3, NOTES.C4],
-  [NOTES.G3, NOTES.B3, NOTES.D4]
-];
-
-// Chora C — 打劫中，五段和弦循环 (Dm → G → C → Am → F)
-const CHORDS_C = [
-  [NOTES.D4, NOTES.F4, NOTES.A4],
-  [NOTES.G4, NOTES.B4, NOTES.D5],
-  [NOTES.C4, NOTES.E4, NOTES.G4],
-  [NOTES.A3, NOTES.C4, NOTES.E4],
-  [NOTES.F4, NOTES.A4, NOTES.C5]
-];
-
-// Chora D — 开局前 10 手，空灵开放式和弦 (Cmaj → Am7 → Fmaj7 → G)
-const CHORDS_D = [
-  [NOTES.C5, NOTES.G4, NOTES.E4],
-  [NOTES.A4, NOTES.E4, NOTES.C4],
-  [NOTES.F4, NOTES.A4, NOTES.C5],
-  [NOTES.G4, NOTES.D4, NOTES.B3]
-];
-
-let bgmMode = 'A';
-let bgmPlaying = false;
-let bgmTimer = null;
-let bgmStarted = false;
-let bgmEnabled = true;
-
-function getBGMChords() {
-  if (bgmMode === 'B') return CHORDS_B;
-  if (bgmMode === 'C') return CHORDS_C;
-  if (bgmMode === 'D') return CHORDS_D;
-  return CHORDS_A;
+// ——— 鼓合成 ———
+function playKick(t, g) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), gn = audioCtx.createGain();
+  o.connect(gn); gn.connect(audioCtx.destination);
+  o.type = 'sine'; o.frequency.setValueAtTime(120, t); o.frequency.exponentialRampToValueAtTime(35, t + 0.12);
+  gn.gain.setValueAtTime(g||0.25, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+  o.start(t); o.stop(t + 0.18);
+}
+function playSnare(t, g) {
+  if (!audioCtx) return;
+  const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.12, audioCtx.sampleRate);
+  const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  const n = audioCtx.createBufferSource(); n.buffer = buf;
+  const f = audioCtx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 1200;
+  const gn = audioCtx.createGain();
+  n.connect(f); f.connect(gn); gn.connect(audioCtx.destination);
+  gn.gain.setValueAtTime(g||0.18, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+  n.start(t); n.stop(t + 0.12);
+}
+function playHihat(t, g) {
+  if (!audioCtx) return;
+  const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.06, audioCtx.sampleRate);
+  const d = buf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  const n = audioCtx.createBufferSource(); n.buffer = buf;
+  const f = audioCtx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 6000;
+  const gn = audioCtx.createGain();
+  n.connect(f); f.connect(gn); gn.connect(audioCtx.destination);
+  gn.gain.setValueAtTime(g||0.10, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+  n.start(t); n.stop(t + 0.06);
 }
 
-function getBGMChordDuration() {
-  if (bgmMode === 'B') return 2.0;
-  if (bgmMode === 'C') return 0.9;
-  if (bgmMode === 'D') return 2.0;
-  return 1.5;
+// ——— 和弦 ———
+const CHORDS_A = [[NOTES.C4,NOTES.E4,NOTES.G4,NOTES.B4],[NOTES.D4,NOTES.F4,NOTES.A4,NOTES.C5],[NOTES.G4,NOTES.B4,NOTES.D5,NOTES.F5],[NOTES.C4,NOTES.E4,NOTES.G4,NOTES.B4]];
+const CHORDS_B = [[NOTES.C3,NOTES.E3,NOTES.G3],[NOTES.F3,NOTES.A3,NOTES.C4],[NOTES.G3,NOTES.B3,NOTES.D4]];
+const CHORDS_C = [[NOTES.D4,NOTES.F4,NOTES.A4],[NOTES.G4,NOTES.B4,NOTES.D5],[NOTES.C4,NOTES.E4,NOTES.G4],[NOTES.A3,NOTES.C4,NOTES.E4],[NOTES.F4,NOTES.A4,NOTES.C5]];
+const CHORDS_D = [[NOTES.C5,NOTES.G4,NOTES.E4],[NOTES.A4,NOTES.E4,NOTES.C4],[NOTES.F4,NOTES.A4,NOTES.C5],[NOTES.G4,NOTES.D4,NOTES.B3]];
+const CHORDS_E = [[NOTES.D4,NOTES.F4,NOTES.A4],[NOTES.G4,NOTES.As4,NOTES.D5],[NOTES.A4,NOTES.C5,NOTES.E5],[NOTES.F4,NOTES.A4,NOTES.C5]];
+const CHORDS_F = [[NOTES.A3,NOTES.C4,NOTES.E4],[NOTES.F3,NOTES.A3,NOTES.C4],[NOTES.G3,NOTES.B3,NOTES.D4],[NOTES.C4,NOTES.E4,NOTES.G4]];
+const CHORDS_G = [[NOTES.C4,NOTES.E4,NOTES.G4,NOTES.B4],[NOTES.A3,NOTES.C4,NOTES.E4,NOTES.G4],[NOTES.F3,NOTES.A3,NOTES.C4,NOTES.E4],[NOTES.G3,NOTES.B3,NOTES.D4,NOTES.F4]];
+
+// ——— 各模式配置 ———
+// 每个模式：bpm, 8拍, chordBeats=换和弦的拍, kick/snare/hihat拍号, melody=[拍, 频率, 持续拍数]
+const MODES = {
+  A: { bpm:80, chordGain:.07, drumGain:.22, melodyGain:.10,
+    chords:CHORDS_A, chordBeats:[0,2,4,6],
+    kick:[0,4], snare:[2,6], hihat:[0,1,2,3,4,5,6,7],
+    melody:[[0,NOTES.E4,2],[2,NOTES.D4,2],[4,NOTES.B3,2],[6,NOTES.C4,2]]
+  },
+  B: { bpm:70, chordGain:.10, drumGain:.28, melodyGain:.14,
+    chords:CHORDS_B, chordBeats:[0,3,6],
+    kick:[0,4], snare:[2,6], hihat:[0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5],
+    melody:[[0,NOTES.C5,1.5],[1.5,NOTES.E5,1.5],[3,NOTES.G4,2],[5,NOTES.B4,0.5],[5.5,NOTES.D5,0.5],[6,NOTES.C5,2]]
+  },
+  C: { bpm:100, chordGain:.11, drumGain:.32, melodyGain:.13,
+    chords:CHORDS_C, chordBeats:[0,1.5,3,4.5,6],
+    kick:[0,2,4,6], snare:[1,3,5,7], hihat:[0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5],
+    melody:[[0,NOTES.D5,0.8],[1,NOTES.F5,0.8],[2,NOTES.E5,0.8],[3,NOTES.D5,0.8],[4,NOTES.C5,0.8],[5,NOTES.A4,0.8],[6,NOTES.D5,2]]
+  },
+  D: { bpm:60, chordGain:.05, drumGain:.14, melodyGain:.08,
+    chords:CHORDS_D, chordBeats:[0,2,4,6],
+    kick:[0,4], snare:[], hihat:[2,6],
+    melody:[[0,NOTES.C5,3],[4,NOTES.E4,3]]
+  },
+  E: { bpm:120, chordGain:.09, drumGain:.30, melodyGain:.12,
+    chords:CHORDS_E, chordBeats:[0,1.5,3,4.5,6],
+    kick:[0,2,4,6], snare:[1,3,5,7], hihat:[0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5],
+    melody:[[0,NOTES.D5,0.6],[1,NOTES.F5,0.4],[2,NOTES.E5,0.6],[3,NOTES.C5,0.4],[4,NOTES.D5,0.6],[5,NOTES.A4,0.4],[6,NOTES.F5,0.6],[7,NOTES.E5,0.6]]
+  },
+  F: { bpm:75, chordGain:.10, drumGain:.26, melodyGain:.13,
+    chords:CHORDS_F, chordBeats:[0,2,4,6],
+    kick:[0,4], snare:[2,6], hihat:[0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5],
+    melody:[[0,NOTES.A4,1.5],[2,NOTES.C5,1.5],[4,NOTES.E5,1.5],[6,NOTES.G5,1.5]]
+  },
+  G: { bpm:45, chordGain:.05, drumGain:.12, melodyGain:.07,
+    chords:CHORDS_G, chordBeats:[0,2,4,6],
+    kick:[0,4], snare:[], hihat:[1,3,5,7],
+    melody:[[0,NOTES.G4,3.5],[4,NOTES.A4,3.5]]
+  }
+};
+
+let bgmMode = 'A', bgmPlaying = false, bgmTimer = null, bgmStarted = false, bgmEnabled = true;
+
+function getBGMConfig() { return MODES[bgmMode] || MODES.A; }
+
+function recentAvgDist() {
+  const hist = game.history;
+  const last5 = hist.slice(-5);
+  if (last5.length < 2) return Infinity;
+  let total = 0, cnt = 0;
+  for (let i = 1; i < last5.length; i++) {
+    const a = last5[i-1], b = last5[i];
+    if (!a || !a.lastMove || !b || !b.lastMove) return Infinity;
+    total += Math.abs(b.lastMove.r - a.lastMove.r) + Math.abs(b.lastMove.c - a.lastMove.c);
+    cnt++;
+  }
+  return cnt > 0 ? total / cnt : Infinity;
 }
 
-function getBGMGain() {
-  if (bgmMode === 'B') return 0.09;
-  if (bgmMode === 'C') return 0.10;
-  if (bgmMode === 'D') return 0.05;
-  return 0.06;
+function hasDragonInAtari() {
+  const bd = game.board, N = game.N, visited = Array.from({length:N},()=>Array(N).fill(false));
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (bd[r][c] === 0 || visited[r][c]) continue;
+    const color = bd[r][c];
+    const group = []; const liberties = new Set(); const stack = [[r,c]]; visited[r][c] = true;
+    while (stack.length) {
+      const [cr,cc] = stack.pop(); group.push([cr,cc]);
+      for (const [nr,nc] of game.neighbors(cr,cc)) {
+        if (bd[nr][nc] === color && !visited[nr][nc]) { visited[nr][nc] = true; stack.push([nr,nc]); }
+        else if (bd[nr][nc] === 0) liberties.add(nr+','+nc);
+      }
+    }
+    if (group.length >= 5 && liberties.size <= 1) return true;
+  }
+  return false;
+}
+
+function countEmpty() {
+  const bd = game.board, N = game.N;
+  let e = 0;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (bd[r][c] === 0) e++;
+  return e;
+}
+
+function getScoreLead() {
+  const N = game.N, bd = game.board;
+  let bs = 0, ws = 0;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) { if (bd[r][c] === 1) bs++; else if (bd[r][c] === 2) ws++; }
+  bs += game.captures[1]||0; ws += game.captures[2]||0;
+  const visited = Array.from({length:N},()=>Array(N).fill(false));
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (bd[r][c]!==0||visited[r][c]) continue;
+    const borders = new Set(), stack = [[r,c]]; visited[r][c] = true;
+    while (stack.length) { const [cr,cc]=stack.pop(); for (const [nr,nc] of game.neighbors(cr,cc)) { if (bd[nr][nc]===0&&!visited[nr][nc]){visited[nr][nc]=true;stack.push([nr,nc]);} else if(bd[nr][nc]!==0) borders.add(bd[nr][nc]); } }
+    if (borders.size === 1) { const o=[...borders][0]; if (o===1) bs+=3; else ws+=3; }
+  }
+  return bs - ws;
 }
 
 function determineBGMMode() {
   if (!game) return 'A';
-  if (game.gameOver) return bgmMode; // 终局保持当前模式
+  if (game.gameOver) return bgmMode;
   if (!bgmEnabled) return bgmMode;
-
-  // 开局：前 10 手 → Chora D
-  if (game.history.length < 10) return 'D';
-
-  // 打劫检测
-  if (game.koPoint) return 'C';
-
-  // 粗略估算局面：子数 + 提子
   const N = game.N;
-  const bd = game.board;
-  let bs = 0, ws = 0;
-  for (let r = 0; r < N; r++) {
-    for (let c = 0; c < N; c++) {
-      if (bd[r][c] === 1) bs++;
-      else if (bd[r][c] === 2) ws++;
-    }
-  }
-  bs += game.captures[1] || 0;
-  ws += game.captures[2] || 0;
-
-  // 实空约估：简单 flood fill 看边界
-  const visited = Array.from({length: N}, () => Array(N).fill(false));
-  for (let r = 0; r < N; r++) {
-    for (let c = 0; c < N; c++) {
-      if (bd[r][c] === 0 && !visited[r][c]) {
-        const borders = new Set();
-        const stack = [[r, c]];
-        visited[r][c] = true;
-        while (stack.length) {
-          const [cr, cc] = stack.pop();
-          for (const [nr, nc] of game.neighbors(cr, cc)) {
-            if (bd[nr][nc] === 0 && !visited[nr][nc]) {
-              visited[nr][nc] = true;
-              stack.push([nr, nc]);
-            } else if (bd[nr][nc] !== 0) {
-              borders.add(bd[nr][nc]);
-            }
-          }
-        }
-        if (borders.size === 1) {
-          const owner = [...borders][0];
-          // 粗略：该空域大小约等于 territory 分
-          if (owner === 1) bs += 3;
-          else ws += 3;
-        }
-      }
-    }
-  }
-
-  const diff = bs - ws;
-  // 领先阈值：约 2/3 路数
+  // ⑥ 开局
+  if (game.history.length < 15) return 'D';
+  // ⑦ 终局前
+  if (game.passCount === 1) return 'G';
+  // ② 大龙危机
+  if (hasDragonInAtari()) return 'C';
+  // ① 中盘激战
+  const avg = recentAvgDist();
+  if (avg <= 2) return 'E';
+  // ⑤ 官子阶段
+  if (countEmpty() < N * 3) return 'G';
+  // ③ 白棋领先
+  const lead = getScoreLead();
   const threshold = Math.max(6, N * 0.5);
-  if (diff > threshold) return 'B';
+  if (lead < -threshold) return 'F';
+  // ⑧ 任一方优势
+  if (Math.abs(lead) > threshold) return 'B';
   return 'A';
 }
 
+// ④ 逆转/大吃：单手提子 ≥3 时播放一次强音，不切换模式
+function playStinger() {
+  try {
+    initAudio();
+    const now = audioCtx.currentTime;
+    playChord([NOTES.C4,NOTES.E4,NOTES.G4,NOTES.C5], now, 0.6, 0.18);
+    playChord([NOTES.G4,NOTES.B4,NOTES.D5,NOTES.G5], now + 0.1, 0.5, 0.14);
+    playKick(now, 0.35);
+    playKick(now + 0.4, 0.25);
+    playSnare(now + 0.2, 0.20);
+  } catch(e) {}
+}
+
+// ——— 调度：精准安排在 audio clock 上 ———
 function playBGMLoop() {
   if (!bgmPlaying || !audioCtx) return;
+  const m = determineBGMMode();
+  if (m !== bgmMode) { bgmMode = m; }
+  const cfg = getBGMConfig();
+  const beatSec = 60 / cfg.bpm;
+  const totalBeats = 8;
+  const now = audioCtx.currentTime;
 
-  // 检测模式变化
-  const newMode = determineBGMMode();
-  if (newMode !== bgmMode) {
-    bgmMode = newMode;
-    // 切换模式直接重新开始循环
-  }
-
-  const chords = getBGMChords();
-  const dur = getBGMChordDuration();
-  const gain = getBGMGain();
-  let idx = 0;
-
-  function scheduleNext() {
-    if (!bgmPlaying || !audioCtx) return;
-
-    // 每轮重新检测模式
-    const m = determineBGMMode();
-    if (m !== bgmMode) {
-      bgmMode = m;
-      // 重新调度新循环
-      clearTimeout(bgmTimer);
-      playBGMLoop();
-      return;
+  for (let b = 0; b < totalBeats; b++) {
+    const t = now + b * beatSec;
+    // 和弦
+    const ci = cfg.chordBeats.indexOf(b);
+    if (ci >= 0) {
+      const freqs = cfg.chords[ci % cfg.chords.length];
+      // 和弦持续到下个和弦
+      const nextB = ci + 1 < cfg.chordBeats.length ? cfg.chordBeats[ci + 1] : totalBeats;
+      playChord(freqs, t, (nextB - b) * beatSec * 0.9, cfg.chordGain);
     }
-
-    const now = audioCtx.currentTime;
-    playChord(chords[idx], now, dur * 0.85, gain);
-    idx = (idx + 1) % chords.length;
-    bgmTimer = setTimeout(scheduleNext, dur * 1000);
+    // 鼓
+    if (cfg.kick.includes(b)) playKick(t, cfg.drumGain);
+    if (cfg.snare.includes(b)) playSnare(t, cfg.drumGain);
+    if (cfg.hihat.includes(b)) playHihat(t, cfg.drumGain * 0.4);
+    // 旋律（支持半拍 .5）
+    for (const [beat, freq, dur] of cfg.melody) {
+      if (Math.abs(beat - b) < 0.01) playPianoNote(freq, t, dur * beatSec, cfg.melodyGain);
+    }
+  }
+  // 八分音符补充（melody / hihat 用 .5 拍）
+  for (let b = 0; b < totalBeats; b++) {
+    const t = now + (b + 0.5) * beatSec;
+    if (cfg.hihat.includes(b + 0.5)) playHihat(t, cfg.drumGain * 0.4);
+    for (const [beat, freq, dur] of cfg.melody) {
+      if (Math.abs(beat - (b + 0.5)) < 0.01) playPianoNote(freq, t, dur * beatSec, cfg.melodyGain);
+    }
   }
 
-  scheduleNext();
+  bgmTimer = setTimeout(() => {
+    if (!bgmPlaying) return;
+    const m2 = determineBGMMode();
+    if (m2 !== bgmMode) { bgmMode = m2; }
+    playBGMLoop();
+  }, totalBeats * beatSec * 1000 * 0.85);
 }
 
 function startBGM() {
-  if (bgmPlaying) return;
-  if (!bgmEnabled) return;
-  if (!audioCtx) {
-    try { initAudio(); } catch(e) { return; }
-    if (!audioCtx) return;
-  }
+  if (bgmPlaying || !bgmEnabled) return;
+  if (!audioCtx) { try { initAudio(); } catch(e) { return; } if (!audioCtx) return; }
   bgmPlaying = true;
   bgmMode = determineBGMMode();
   playBGMLoop();
@@ -1335,20 +1397,14 @@ function startBGM() {
 }
 
 function stopBGM() {
-  bgmPlaying = false;
-  bgmStarted = false;
+  bgmPlaying = false; bgmStarted = false;
   if (bgmTimer) { clearTimeout(bgmTimer); bgmTimer = null; }
 }
 
 function updateBGM() {
   if (!bgmPlaying) return;
-  // 检测模式变化（playBGMLoop 内部每轮也会检测，这里额外触发切换）
   const m = determineBGMMode();
-  if (m !== bgmMode) {
-    bgmMode = m;
-    if (bgmTimer) { clearTimeout(bgmTimer); bgmTimer = null; }
-    playBGMLoop();
-  }
+  if (m !== bgmMode) { bgmMode = m; if (bgmTimer) { clearTimeout(bgmTimer); } playBGMLoop(); }
 }
 
 // ============================================================
@@ -1507,7 +1563,10 @@ function doMove(r, c) {
     return;
   }
   const clr = game.turn;
+  const prevCap = game.captures[clr] || 0;
   game.placeStone(r, c);
+  const capturedNow = (game.captures[clr] || 0) - prevCap;
+  if (capturedNow >= 3) playStinger();
   renderer.startAnimation(r, c, clr);
   renderer.cachedTerritory = null;
   if (clr === 1) playBlackMoveSound(); else playWhiteMoveSound();
@@ -1544,7 +1603,10 @@ function doAIMove() {
   aiOverlay.classList.remove('show');
   if (move) {
     const clr = game.turn;
+    const prevCap = game.captures[clr] || 0;
     game.placeStone(move.r, move.c);
+    const capturedNow = (game.captures[clr] || 0) - prevCap;
+    if (capturedNow >= 3) playStinger();
     renderer.startAnimation(move.r, move.c, clr);
     renderer.cachedTerritory = null;
     if (clr === 1) playBlackMoveSound(); else playWhiteMoveSound();
