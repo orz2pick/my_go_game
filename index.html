@@ -899,33 +899,67 @@ class GoAI {
           if (allOwn) score -= 5000;
         }
 
-        const myGrp = findGroupAt(r, c, bc, N);
-        const myLibs = findLibertiesAt(myGrp, bc, N);
-        if (myLibs.length === 0 && captures === 0) score -= 500;
-        else if (myLibs.length === 1 && captures === 0) score -= 200;
+        const myGrpAfter = findGroupAt(r, c, bc, N);
+        const myLibsAfter = findLibertiesAt(myGrpAfter, bc, N);
+        if (myLibsAfter.length === 0 && captures === 0) score -= 500;
+        else if (myLibsAfter.length === 1 && captures === 0) score -= 200;
 
-        if (myWeakSet.has(mk)) {
-          const libsAfter = findLibertiesAt(findGroupAt(r, c, bc, N), bc, N);
-          score += Math.max(0, libsAfter.length - 1) * 80 + 60;
+        // ① 救活被打吃的己方棋团（当前棋盘上己方团仅 1 气）
+        if (captures === 0 && myLibsAfter.length >= 1) {
+          for (const [nr, nc] of game.neighbors(r, c)) {
+            if (game.board[nr][nc] === this.color) {
+              const grp = findGroupAt(nr, nc, game.board, N);
+              if (findLibertiesAt(grp, game.board, N).length === 1) {
+                score += 500; break;
+              }
+            }
+          }
         }
 
+        // ② 攻击：落子后对方棋团被打吃（剩 1 气）
+        for (const [nr, nc] of game.neighbors(r, c)) {
+          if (bc[nr][nc] === opp) {
+            const grp = findGroupAt(nr, nc, bc, N);
+            if (findLibertiesAt(grp, bc, N).length === 1) score += 150;
+          }
+        }
+
+        // ③ 连接己方不同棋团
+        const ownGroupIds = new Set();
+        for (const [nr, nc] of game.neighbors(r, c)) {
+          if (game.board[nr][nc] === this.color) {
+            const grp = findGroupAt(nr, nc, game.board, N);
+            if (grp.length) ownGroupIds.add(grp[0][0] * N + grp[0][1]);
+          }
+        }
+        if (ownGroupIds.size >= 2) score += 50 * (ownGroupIds.size - 1);
+
+        // ④ 弱棋处理
+        if (myWeakSet.has(mk)) {
+          score += Math.max(0, myLibsAfter.length - 1) * 80 + 60;
+        }
         if (oppWeakSet.has(mk)) score += 120;
 
+        // ⑤ 做眼
         const eyeScore = greedyEyeVal(r, c, board, bc, N, this.color, opp);
         score += eyeScore;
 
-        let conn = 0;
-        for (const [nr, nc] of game.neighbors(r, c)) if (game.board[nr][nc] === this.color) conn++;
-        score += conn * 18;
+        // ⑥ 连己方 & 靠对方
+        let conn = 0, adjOpp = 0;
+        for (const [nr, nc] of game.neighbors(r, c)) {
+          if (game.board[nr][nc] === this.color) conn++;
+          if (game.board[nr][nc] === opp) adjOpp++;
+        }
+        score += conn * 18 + adjOpp * 4;
 
-        let adjOpp = 0;
-        for (const [nr, nc] of game.neighbors(r, c)) if (game.board[nr][nc] === opp) adjOpp++;
-        score += adjOpp * 4;
-
+        // ⑦ 位置偏好（13 路星位优先）
         const de = Math.min(r, c, N - 1 - r, N - 1 - c);
-        if (de === 2) score += 8; else if (de === 3) score += 6;
-        else if (de === 0) score += 3; else if (de === 1) score += 4;
+        if (de === 3) score += N === 13 ? 10 : 6;
+        else if (de === 2) score += N === 13 ? 7 : 8;
+        else if (de === 1) score += 4;
+        else if (de === 0) score += 3;
 
+        // ⑧ 靠近对手最近落子
         if (game.lastMove) {
           const dd = Math.abs(r - game.lastMove.r) + Math.abs(c - game.lastMove.c);
           if (dd <= 3) score += 6 - dd;
