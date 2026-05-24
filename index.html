@@ -568,63 +568,274 @@ class GoGame {
 }
 
 // ============================================================
-// ====================== 2. 贪心 AI ===========================
+// ====================== 2. MCTS AI ==========================
 // ============================================================
-// ===== AI 做活辅助函数 =====
-function getAllGroups(board, N, color) {
-  const visited = Array.from({length: N}, () => Array(N).fill(false));
-  const groups = [];
-  for (let r = 0; r < N; r++) {
-    for (let c = 0; c < N; c++) {
-      if (board[r][c] !== color || visited[r][c]) continue;
-      const group = [];
-      const stack = [[r, c]];
-      visited[r][c] = true;
-      while (stack.length) {
-        const [cr, cc] = stack.pop();
-        group.push([cr, cc]);
-        for (const [nr, nc] of neighborsAt(cr, cc, N)) {
-          if (board[nr][nc] === color && !visited[nr][nc]) {
-            visited[nr][nc] = true;
-            stack.push([nr, nc]);
+
+// ——— 轻量化棋盘状态（供 MCTS 推演使用） ———
+class MCTSState {
+  constructor(N) {
+    this.N = N;
+    this.board = Array.from({length: N}, () => new Array(N).fill(0));
+    this.turn = 1;
+    this.captures = {1: 0, 2: 0};
+    this.koPoint = null;
+    this.passCount = 0;
+    this.lastMove = null;
+  }
+
+  static fromGame(game) {
+    const s = new MCTSState(game.N);
+    for (let r = 0; r < game.N; r++)
+      for (let c = 0; c < game.N; c++)
+        s.board[r][c] = game.board[r][c];
+    s.turn = game.turn;
+    s.captures = {1: game.captures[1] || 0, 2: game.captures[2] || 0};
+    s.koPoint = game.koPoint ? {r: game.koPoint.r, c: game.koPoint.c} : null;
+    s.passCount = game.passCount;
+    s.lastMove = game.lastMove ? {r: game.lastMove.r, c: game.lastMove.c} : null;
+    return s;
+  }
+
+  clone() {
+    const s = new MCTSState(this.N);
+    for (let r = 0; r < this.N; r++)
+      for (let c = 0; c < this.N; c++)
+        s.board[r][c] = this.board[r][c];
+    s.turn = this.turn;
+    s.captures = {1: this.captures[1], 2: this.captures[2]};
+    s.koPoint = this.koPoint ? {r: this.koPoint.r, c: this.koPoint.c} : null;
+    s.passCount = this.passCount;
+    s.lastMove = this.lastMove ? {r: this.lastMove.r, c: this.lastMove.c} : null;
+    return s;
+  }
+
+  neighbors(r, c) {
+    const n = [];
+    if (r > 0) n.push([r - 1, c]);
+    if (r < this.N - 1) n.push([r + 1, c]);
+    if (c > 0) n.push([r, c - 1]);
+    if (c < this.N - 1) n.push([r, c + 1]);
+    return n;
+  }
+
+  getGroup(r, c) {
+    const color = this.board[r][c];
+    if (color === 0) return [];
+    const group = [];
+    const visited = new Set();
+    const stack = [[r, c]];
+    while (stack.length) {
+      const [cr, cc] = stack.pop();
+      const key = cr * this.N + cc;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      if (this.board[cr][cc] !== color) continue;
+      group.push([cr, cc]);
+      for (const [nr, nc] of this.neighbors(cr, cc)) {
+        if (!visited.has(nr * this.N + nc)) stack.push([nr, nc]);
+      }
+    }
+    return group;
+  }
+
+  getGroupLiberties(group) {
+    const libs = new Set();
+    for (const [r, c] of group) {
+      for (const [nr, nc] of this.neighbors(r, c)) {
+        if (this.board[nr][nc] === 0) libs.add(nr * this.N + nc);
+      }
+    }
+    return libs;
+  }
+
+  isValidMove(r, c) {
+    if (this.board[r][c] !== 0) return false;
+    if (this.koPoint && this.koPoint.r === r && this.koPoint.c === c) return false;
+    const opp = this.turn === 1 ? 2 : 1;
+    for (const [nr, nc] of this.neighbors(r, c)) {
+      if (this.board[nr][nc] === 0) return true;
+      if (this.board[nr][nc] === opp) {
+        const grp = this.getGroup(nr, nc);
+        if (this.getGroupLiberties(grp).size === 1) return true;
+      }
+    }
+    for (const [nr, nc] of this.neighbors(r, c)) {
+      if (this.board[nr][nc] === this.turn) {
+        const grp = this.getGroup(nr, nc);
+        const libs = this.getGroupLiberties(grp);
+        if (libs.size > 1) return true;
+        if (libs.size === 1) {
+          const k = [...libs][0];
+          if (k !== r * this.N + c) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  play(move) {
+    if (!move) {
+      this.passCount++;
+      this.koPoint = null;
+      this.lastMove = null;
+      this.turn = this.turn === 1 ? 2 : 1;
+      return;
+    }
+    const {r, c} = move;
+    if (this.board[r][c] !== 0) return;
+    if (this.koPoint && this.koPoint.r === r && this.koPoint.c === c) return;
+    this.board[r][c] = this.turn;
+    const opp = this.turn === 1 ? 2 : 1;
+    let capTotal = 0;
+    let firstCap = null;
+    for (const [nr, nc] of this.neighbors(r, c)) {
+      if (this.board[nr][nc] === opp) {
+        const grp = this.getGroup(nr, nc);
+        if (this.getGroupLiberties(grp).size === 0) {
+          for (const [gr, gc] of grp) this.board[gr][gc] = 0;
+          capTotal += grp.length;
+          if (!firstCap) firstCap = grp[0];
+        }
+      }
+    }
+    this.captures[this.turn] += capTotal;
+    this.koPoint = (capTotal === 1 && this.getGroup(r, c).length === 1 && firstCap)
+      ? {r: firstCap[0], c: firstCap[1]} : null;
+    this.passCount = 0;
+    this.lastMove = {r, c};
+    this.turn = opp;
+  }
+
+  rollRandomMove() {
+    const N = this.N;
+    for (let t = 0; t < 25; t++) {
+      const r = Math.floor(Math.random() * N);
+      const c = Math.floor(Math.random() * N);
+      if (this.isValidMove(r, c)) return {r, c};
+    }
+    for (let r = 0; r < N; r++)
+      for (let c = 0; c < N; c++)
+        if (this.isValidMove(r, c)) return {r, c};
+    return null;
+  }
+
+  getWinner() {
+    const N = this.N;
+    const visited = Array.from({length: N}, () => new Array(N).fill(false));
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        if (this.board[r][c] !== 0 || visited[r][c]) continue;
+        const borders = new Set();
+        const stack = [[r, c]];
+        visited[r][c] = true;
+        while (stack.length) {
+          const [cr, cc] = stack.pop();
+          for (const [nr, nc] of this.neighbors(cr, cc)) {
+            if (this.board[nr][nc] === 0 && !visited[nr][nc]) { visited[nr][nc] = true; stack.push([nr, nc]); }
+            else if (this.board[nr][nc] !== 0) borders.add(this.board[nr][nc]);
+          }
+        }
+        if (borders.size === 1) {
+          const owner = [...borders][0];
+          stack.push([r, c]); visited[r][c] = true;
+          while (stack.length) {
+            const [cr, cc] = stack.pop();
+            this.board[cr][cc] = owner;
+            for (const [nr, nc] of this.neighbors(cr, cc)) {
+              if (this.board[nr][nc] === 0 && !visited[nr][nc]) { visited[nr][nc] = true; stack.push([nr, nc]); }
+            }
           }
         }
       }
-      groups.push(group);
     }
+    let bs = 0, ws = 0;
+    for (let r = 0; r < N; r++)
+      for (let c = 0; c < N; c++) {
+        if (this.board[r][c] === 1) bs++;
+        else if (this.board[r][c] === 2) ws++;
+      }
+    ws += 7.5;
+    return bs > ws ? 1 : 2;
   }
-  return groups;
 }
 
-function getGroupLiberties(group, board, N) {
-  const libs = new Set();
-  for (const [r, c] of group) {
-    for (const [nr, nc] of neighborsAt(r, c, N)) {
-      if (board[nr][nc] === 0) libs.add(nr * N + nc);
-    }
+// ——— MCTS 节点 ———
+class MCTSNode {
+  constructor(state, parent, move) {
+    this.state = state;
+    this.parent = parent;
+    this.move = move;
+    this.children = [];
+    this.visits = 0;
+    this.wins = 0;
+    this.untriedMoves = null;
   }
-  return [...libs];
+
+  isFullyExpanded() {
+    return this.untriedMoves !== null && this.untriedMoves.length === 0;
+  }
 }
 
-function estimateEyeValue(r, c, origBoard, simBoard, N, color, opp) {
-  let val = 0;
-  for (const [nr, nc] of neighborsAt(r, c, N)) {
-    if (simBoard[nr][nc] !== 0) continue;
-    let adj = 0;
-    for (const [nnr, nnc] of neighborsAt(nr, nc, N)) {
-      if (simBoard[nnr][nnc] === color) adj++;
-    }
-    if (adj === 4) val += 300;
-    else if (adj === 3) val += 80;
+// ——— MCTS 核心算法 ———
+function mctsSelect(node) {
+  const C = Math.SQRT2, logP = Math.log(node.visits);
+  let best = null, bestVal = -Infinity;
+  for (const ch of node.children) {
+    const uct = ch.wins / ch.visits + C * Math.sqrt(logP / ch.visits);
+    if (uct > bestVal) { bestVal = uct; best = ch; }
   }
-  let adjColor = 0;
-  for (const [nr, nc] of neighborsAt(r, c, N)) {
-    if (simBoard[nr][nc] === color) adjColor++;
-  }
-  if (adjColor >= 3) val += 60;
-  return val;
+  return best;
 }
 
+function mctsRollout(state, maxMoves) {
+  const sim = state.clone();
+  for (let i = 0; i < maxMoves; i++) {
+    if (sim.passCount >= 2) break;
+    const m = sim.rollRandomMove();
+    sim.play(m);
+  }
+  return sim.getWinner();
+}
+
+function mctsSearch(rootState, iterations, maxRollout) {
+  const root = new MCTSNode(rootState, null, null);
+  for (let iter = 0; iter < iterations; iter++) {
+    let node = root;
+    while (node.state.passCount < 2 && node.isFullyExpanded()) {
+      const c = mctsSelect(node);
+      if (!c) break;
+      node = c;
+    }
+    if (node.state.passCount < 2) {
+      if (node.untriedMoves === null) {
+        const moves = [];
+        for (let r = 0; r < node.state.N; r++)
+          for (let c = 0; c < node.state.N; c++)
+            if (node.state.isValidMove(r, c)) moves.push({r, c});
+        for (let i = moves.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [moves[i], moves[j]] = [moves[j], moves[i]]; }
+        node.untriedMoves = moves;
+      }
+      if (node.untriedMoves.length > 0) {
+        const mv = node.untriedMoves.pop();
+        const ns = node.state.clone();
+        ns.play(mv);
+        node.children.push(new MCTSNode(ns, node, mv));
+        node = node.children[node.children.length - 1];
+      }
+    }
+    const winner = (node.state.passCount >= 2) ? node.state.getWinner() : mctsRollout(node.state, maxRollout);
+    let n = node;
+    while (n) { n.visits++; if (winner && winner === n.state.turn) n.wins++; n = n.parent; }
+  }
+  let best = null, bestRate = -1;
+  for (const ch of root.children) {
+    const rate = ch.wins / ch.visits;
+    if (rate > bestRate) { bestRate = rate; best = ch; }
+  }
+  return best ? best.move : null;
+}
+
+// ——— GoAI 适配器：9×9 → MCTS，13×13/19×19 → 贪心启发式 ———
 class GoAI {
   constructor(game, color) {
     this.game = game;
@@ -632,6 +843,15 @@ class GoAI {
   }
 
   getBestMove() {
+    const N = this.game.N;
+    if (N <= 9) {
+      const rootState = MCTSState.fromGame(this.game);
+      return mctsSearch(rootState, 2000, 30);
+    }
+    return this.greedyBestMove();
+  }
+
+  greedyBestMove() {
     const game = this.game;
     const N = game.N;
     const opp = this.color === 1 ? 2 : 1;
@@ -639,16 +859,16 @@ class GoAI {
     let bestScore = -Infinity;
     let bestMove = null;
 
-    const myGroups = getAllGroups(board, N, this.color);
-    const oppGroups = getAllGroups(board, N, opp);
+    const myGroups = greedyGetAllGroups(board, N, this.color);
+    const oppGroups = greedyGetAllGroups(board, N, opp);
     const myWeakSet = new Set();
     const oppWeakSet = new Set();
     for (const g of myGroups) {
-      const libs = getGroupLiberties(g, board, N);
+      const libs = greedyGroupLibs(g, board, N);
       if (libs.length <= 3) libs.forEach(k => myWeakSet.add(k));
     }
     for (const g of oppGroups) {
-      const libs = getGroupLiberties(g, board, N);
+      const libs = greedyGroupLibs(g, board, N);
       if (libs.length <= 2) libs.forEach(k => oppWeakSet.add(k));
     }
 
@@ -680,7 +900,9 @@ class GoAI {
         }
 
         const myGrp = findGroupAt(r, c, bc, N);
-        if (findLibertiesAt(myGrp, bc, N).length === 0 && captures === 0) score -= 500;
+        const myLibs = findLibertiesAt(myGrp, bc, N);
+        if (myLibs.length === 0 && captures === 0) score -= 500;
+        else if (myLibs.length === 1 && captures === 0) score -= 200;
 
         if (myWeakSet.has(mk)) {
           const libsAfter = findLibertiesAt(findGroupAt(r, c, bc, N), bc, N);
@@ -689,7 +911,7 @@ class GoAI {
 
         if (oppWeakSet.has(mk)) score += 120;
 
-        const eyeScore = estimateEyeValue(r, c, board, bc, N, this.color, opp);
+        const eyeScore = greedyEyeVal(r, c, board, bc, N, this.color, opp);
         score += eyeScore;
 
         let conn = 0;
@@ -712,10 +934,61 @@ class GoAI {
         if (score > bestScore) { bestScore = score; bestMove = { r, c }; }
       }
     }
-
     if (bestScore < -100) return null;
     return bestMove;
   }
+}
+
+// ——— 贪心 AI 辅助函数 ———
+function greedyGetAllGroups(board, N, color) {
+  const visited = Array.from({length: N}, () => Array(N).fill(false));
+  const groups = [];
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (board[r][c] !== color || visited[r][c]) continue;
+      const group = [];
+      const stack = [[r, c]];
+      visited[r][c] = true;
+      while (stack.length) {
+        const [cr, cc] = stack.pop();
+        group.push([cr, cc]);
+        for (const [nr, nc] of neighborsAt(cr, cc, N)) {
+          if (board[nr][nc] === color && !visited[nr][nc]) { visited[nr][nc] = true; stack.push([nr, nc]); }
+        }
+      }
+      groups.push(group);
+    }
+  }
+  return groups;
+}
+
+function greedyGroupLibs(group, board, N) {
+  const libs = new Set();
+  for (const [r, c] of group) {
+    for (const [nr, nc] of neighborsAt(r, c, N)) {
+      if (board[nr][nc] === 0) libs.add(nr * N + nc);
+    }
+  }
+  return [...libs];
+}
+
+function greedyEyeVal(r, c, origBoard, simBoard, N, color, opp) {
+  let val = 0;
+  for (const [nr, nc] of neighborsAt(r, c, N)) {
+    if (simBoard[nr][nc] !== 0) continue;
+    let adj = 0;
+    for (const [nnr, nnc] of neighborsAt(nr, nc, N)) {
+      if (simBoard[nnr][nnc] === color) adj++;
+    }
+    if (adj === 4) val += 300;
+    else if (adj === 3) val += 80;
+  }
+  let adjColor = 0;
+  for (const [nr, nc] of neighborsAt(r, c, N)) {
+    if (simBoard[nr][nc] === color) adjColor++;
+  }
+  if (adjColor >= 3) val += 60;
+  return val;
 }
 
 function findGroupAt(r, c, board, N) {
