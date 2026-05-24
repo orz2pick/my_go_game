@@ -51,6 +51,23 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 .size-btn{display:block;width:220px;padding:12px 0;margin:10px auto;border:none;border-radius:10px;font-size:20px;font-weight:700;color:#fff;background:linear-gradient(135deg,#8B6914,#A07818);cursor:pointer;box-shadow:0 3px 8px rgba(0,0,0,.25);transition:transform .1s}
 .size-btn:active{transform:scale(.95)}
 .size-btn .sub{display:block;font-size:12px;font-weight:400;opacity:.7;margin-top:2px}
+
+/* ===== AI 思考遮罩 ===== */
+#ai-overlay{display:none;position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:30;align-items:center;justify-content:center;flex-direction:column;border-radius:4px}
+#ai-overlay.show{display:flex}
+#ai-overlay .spinner{width:48px;height:48px;border:4px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:ai-spin .8s linear infinite}
+#ai-overlay span{color:#fff;font-size:16px;font-weight:600;margin-top:14px;text-shadow:0 1px 4px rgba(0,0,0,.5);letter-spacing:1px}
+@keyframes ai-spin{to{transform:rotate(360deg)}}
+
+/* ===== AI / 保存 / 读取 ===== */
+#bottom-bar .sep{width:1px;height:28px;background:rgba(255,255,255,.15);margin:0 4px;align-self:center}
+#bottom-bar .btn-ai{background:linear-gradient(135deg,#556B2F,#6B8E23)}
+#bottom-bar .btn-ai.active{background:linear-gradient(135deg,#228B22,#32CD32);box-shadow:0 0 12px rgba(50,205,50,.4)}
+#bottom-bar .btn-ai.active:active{box-shadow:0 0 4px rgba(50,205,50,.3)}
+#bottom-bar .btn-save{background:linear-gradient(135deg,#4A6B8A,#5F9EA0)}
+#bottom-bar .btn-load{background:linear-gradient(135deg,#8B5A2B,#CD853F)}
+#ai-thinking{display:none;color:#90EE90;font-size:12px;font-weight:400;background:rgba(0,0,0,.3);padding:2px 10px;border-radius:10px;white-space:nowrap}
+#ai-thinking.show{display:inline-block}
 </style>
 </head>
 <body>
@@ -71,6 +88,10 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 
 <div id="board-wrap">
   <canvas id="board"></canvas>
+  <div id="ai-overlay">
+    <div class="spinner"></div>
+    <span>AI 思考中…</span>
+  </div>
   <img id="hand-cursor" src="手指.png" alt="" draggable="false">
 </div>
 
@@ -81,6 +102,11 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
   <button id="btn-count">📊 目数</button>
   <button id="btn-resign">🏳 认输</button>
   <button id="btn-count-result">🔢 数子结算</button>
+  <span class="sep"></span>
+  <button id="btn-ai" class="btn-ai">🤖 AI</button>
+  <span id="ai-thinking">⏳ 思考中…</span>
+  <button id="btn-save" class="btn-save">💾 保存</button>
+  <button id="btn-load" class="btn-load">📂 读取</button>
 </div>
 
 <div id="result-overlay">
@@ -475,6 +501,102 @@ class GoGame {
   // 计算当前领地（不计分，仅预览）
   computeTerritory() {
     return this.computeTerritoryImproved(this.board);
+  }
+
+  // 从已保存数据恢复状态
+  restore(data) {
+    this.N = data.N;
+    this.board = data.board;
+    this.turn = data.turn;
+    this.captures = data.captures;
+    this.history = data.history || [];
+    this.koPoint = data.koPoint;
+    this.passCount = data.passCount || 0;
+    this.gameOver = data.gameOver || false;
+    this.lastMove = data.lastMove || null;
+    this.territory = data.territory || null;
+    this.scores = data.scores || null;
+    this.computeValidMoves();
+  }
+}
+
+// ============================================================
+// ====================== 2. 贪心 AI ===========================
+// ============================================================
+class GoAI {
+  constructor(game, color) {
+    this.game = game;
+    this.color = color;
+  }
+
+  getBestMove() {
+    const game = this.game;
+    const N = game.N;
+    const opp = this.color === 1 ? 2 : 1;
+    let bestScore = -Infinity;
+    let bestMove = null;
+
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        if (!game.isValidMove(r, c)) continue;
+
+        let score = 0;
+
+        // 模拟落子
+        const bc = game.boardClone();
+        bc[r][c] = this.color;
+
+        // ① 提子 (+200/子)
+        let captures = 0;
+        for (const [nr, nc] of game.neighbors(r, c)) {
+          if (bc[nr][nc] === opp) {
+            const grp = findGroupAt(nr, nc, bc, N);
+            if (findLibertiesAt(grp, bc, N).length === 0) {
+              captures += grp.length;
+            }
+          }
+        }
+        score += captures * 200;
+
+        // ② 自填气 (无提子时严厉惩罚)
+        const myGrp = findGroupAt(r, c, bc, N);
+        if (findLibertiesAt(myGrp, bc, N).length === 0 && captures === 0) {
+          score -= 500;
+        }
+
+        // ③ 连接己方棋 (+10/邻)
+        for (const [nr, nc] of game.neighbors(r, c)) {
+          if (game.board[nr][nc] === this.color) score += 10;
+        }
+
+        // ④ 靠近对方 (+4/邻)
+        for (const [nr, nc] of game.neighbors(r, c)) {
+          if (game.board[nr][nc] === opp) score += 4;
+        }
+
+        // ⑤ 星位/小目/三三 开局偏好
+        const distEdge = Math.min(r, c, N - 1 - r, N - 1 - c);
+        if (distEdge === 2) score += 8;
+        else if (distEdge === 3) score += 6;
+        else if (distEdge === 0) score += 3;
+        else if (distEdge === 1) score += 4;
+
+        // ⑥ 靠近对手最近落子 (+6)
+        if (game.lastMove) {
+          const dd = Math.abs(r - game.lastMove.r) + Math.abs(c - game.lastMove.c);
+          if (dd <= 3) score += 6 - dd;
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestMove = { r, c };
+        }
+      }
+    }
+
+    // 分数太低就停一手 (真没棋了)
+    if (bestScore < -100) return null;
+    return bestMove;
   }
 }
 
@@ -940,9 +1062,19 @@ const btnResign = document.getElementById('btn-resign');
 const btnRestart = document.getElementById('btn-restart');
 const btnCount = document.getElementById('btn-count');
 const btnCountResult = document.getElementById('btn-count-result');
+const btnAI = document.getElementById('btn-ai');
+const btnSave = document.getElementById('btn-save');
+const btnLoad = document.getElementById('btn-load');
+const aiThinking = document.getElementById('ai-thinking');
+const aiOverlay = document.getElementById('ai-overlay');
 const scoreDisplay = document.getElementById('score-display');
 const blackScoreEl = document.getElementById('black-score');
 const whiteScoreEl = document.getElementById('white-score');
+
+let aiEnabled = false;    // AI 是否开启
+let aiColor = 2;          // AI 执白
+let aiThinking_ = false;  // AI 是否正在思考
+let aiMoveTimer = null;
 
 // ---- 移动端检测 & 手指光标（CSS cursor + overlay 混合方案） ----
 const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
@@ -1020,15 +1152,26 @@ function updateScoreDisplay() {
 // ---- 更新 UI ----
 function updateUI() {
   const t = game.turn;
+  const thinking = aiThinking_;
   turnDot.className = 'turn-dot ' + (t === 1 ? 'black' : 'white');
-  turnText.textContent = game.gameOver ? '终局' : (t === 1 ? '黑棋落子' : '白棋落子');
+  if (game.gameOver) {
+    turnText.textContent = '终局';
+  } else if (thinking) {
+    turnText.textContent = '🤖 AI 思考中…';
+  } else {
+    turnText.textContent = t === 1 ? '黑棋落子' : '白棋落子';
+  }
   blackCap.textContent = game.captures[1] || 0;
   whiteCap.textContent = game.captures[2] || 0;
-  btnUndo.disabled = game.history.length === 0 || game.scores?.byResign;
-  btnPass.disabled = game.gameOver;
+  const canAct = !game.gameOver && !thinking;
+  btnUndo.disabled = !canAct || game.history.length === 0 || game.scores?.byResign;
+  btnPass.disabled = !canAct;
   btnTerritory.disabled = game.gameOver;
-  btnResign.disabled = game.gameOver;
+  btnResign.disabled = !canAct;
   btnCountResult.disabled = game.gameOver;
+  btnAI.disabled = game.gameOver || thinking;
+  btnAI.classList.toggle('active', aiEnabled);
+  aiThinking.classList.toggle('show', thinking);
   btnTerritory.classList.toggle('active', renderer.showTerritory);
   btnCount.classList.toggle('active', scoreDisplay.style.display !== 'none');
   if (scoreDisplay.style.display !== 'none') updateScoreDisplay();
@@ -1041,16 +1184,132 @@ function doMove(r, c) {
     playInvalidSound();
     return;
   }
-  const clr = game.turn; // 落子前记下颜色
+  const clr = game.turn;
   game.placeStone(r, c);
   renderer.startAnimation(r, c, clr);
   renderer.cachedTerritory = null;
   if (clr === 1) playBlackMoveSound(); else playWhiteMoveSound();
-  // 移动端：落子后在交叉点展示手指 1 秒
   if (isTouchDevice) showFingerOverlay(r, c);
   updateUI();
   requestRender();
-  if (game.gameOver) showResult();
+  if (game.gameOver) { showResult(); return; }
+  // AI 回合 → 自动触发
+  if (aiEnabled && game.turn === aiColor && !game.gameOver) {
+    scheduleAIMove();
+  }
+}
+
+// ---- AI 落子 ----
+function scheduleAIMove() {
+  if (aiMoveTimer) { clearTimeout(aiMoveTimer); aiMoveTimer = null; }
+  aiMoveTimer = setTimeout(() => {
+    aiMoveTimer = null;
+    doAIMove();
+  }, 350);
+}
+
+function doAIMove() {
+  if (game.gameOver || !aiEnabled) return;
+  aiThinking_ = true;
+  aiOverlay.classList.add('show');
+  updateUI();
+  const ai = new GoAI(game, aiColor);
+  const move = ai.getBestMove();
+  aiThinking_ = false;
+  aiOverlay.classList.remove('show');
+  if (move) {
+    // AI 落子用白棋音效（白子默认）或根据颜色选择
+    const clr = game.turn;
+    game.placeStone(move.r, move.c);
+    renderer.startAnimation(move.r, move.c, clr);
+    renderer.cachedTerritory = null;
+    if (clr === 1) playBlackMoveSound(); else playWhiteMoveSound();
+    updateUI();
+    requestRender();
+    if (game.gameOver) { showResult(); return; }
+    // 如果 AI 连续下（AI vs AI），继续
+    if (aiEnabled && game.turn === aiColor && !game.gameOver) {
+      scheduleAIMove();
+    }
+  } else {
+    // AI 停一手
+    const over = game.pass();
+    renderer.cachedTerritory = null;
+    updateUI();
+    requestRender();
+    if (over) showResult();
+  }
+}
+
+// ---- 棋局保存 / 读取 ----
+function saveGame() {
+  try {
+    const data = {
+      N: game.N,
+      board: game.board,
+      turn: game.turn,
+      captures: game.captures,
+      history: game.history,
+      koPoint: game.koPoint,
+      passCount: game.passCount,
+      gameOver: game.gameOver,
+      lastMove: game.lastMove,
+      territory: game.territory,
+      scores: game.scores,
+      aiEnabled: aiEnabled,
+      aiColor: aiColor
+    };
+    localStorage.setItem('go-save', JSON.stringify(data));
+    showToast('棋局已保存');
+  } catch(e) {
+    showToast('保存失败: ' + e.message);
+  }
+}
+
+function loadGame() {
+  try {
+    const raw = localStorage.getItem('go-save');
+    if (!raw) { showToast('没有找到存档'); return false; }
+    const data = JSON.parse(raw);
+    if (!data.N || !data.board) { showToast('存档数据损坏'); return false; }
+
+    // 重新创建游戏 & 渲染器
+    resultOverlay.classList.remove('show');
+    game = new GoGame(data.N);
+    game.restore(data);
+    renderer = new BoardRenderer(canvas, game);
+    aiEnabled = data.aiEnabled || false;
+    aiColor = data.aiColor || 2;
+    aiThinking_ = false;
+    aiOverlay.classList.remove('show');
+    if (aiMoveTimer) { clearTimeout(aiMoveTimer); aiMoveTimer = null; }
+    resize();
+    updateUI();
+    requestRender();
+    showToast('棋局已读取');
+    // 如果轮到 AI，自动触发
+    if (aiEnabled && game.turn === aiColor && !game.gameOver) {
+      scheduleAIMove();
+    }
+    return true;
+  } catch(e) {
+    showToast('读取失败: ' + e.message);
+    return false;
+  }
+}
+
+function showToast(msg) {
+  const el = document.getElementById('toast') || (() => {
+    const t = document.createElement('div');
+    t.id = 'toast';
+    t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;padding:8px 20px;border-radius:20px;font-size:14px;z-index:300;transition:opacity .3s;pointer-events:none';
+    document.body.appendChild(t);
+    return t;
+  })();
+  el.textContent = msg;
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 2000);
 }
 
 // ---- 交互坐标转换 ----
@@ -1080,7 +1339,7 @@ function getNearestIntersection(e) {
 
 // ---- 鼠标事件 ----
 canvas.addEventListener('mousemove', e => {
-  if (game.gameOver) { renderer.ghostPos = null; requestRender(); return; }
+  if (!game || game.gameOver || aiThinking_) { renderer.ghostPos = null; requestRender(); return; }
   const pt = getNearestIntersection(e);
   if (pt && game.isValidMove(pt.r, pt.c)) {
     renderer.ghostPos = {r: pt.r, c: pt.c, color: game.turn};
@@ -1091,11 +1350,13 @@ canvas.addEventListener('mousemove', e => {
 });
 
 canvas.addEventListener('mouseleave', () => {
+  if (!renderer) return;
   renderer.ghostPos = null;
   requestRender();
 });
 
 canvas.addEventListener('click', e => {
+  if (aiThinking_) return;
   initAudio();
   const pt = getNearestIntersection(e);
   if (pt) doMove(pt.r, pt.c);
@@ -1111,6 +1372,7 @@ let dragTransX = 0, dragTransY = 0;
 
 canvas.addEventListener('touchstart', e => {
   e.preventDefault();
+  if (aiThinking_) return;
   initAudio();
   if (e.touches.length === 1) {
     touchId = e.touches[0].identifier;
@@ -1156,6 +1418,7 @@ canvas.addEventListener('touchmove', e => {
 
 canvas.addEventListener('touchend', e => {
   e.preventDefault();
+  if (aiThinking_) { renderer.ghostPos = null; requestRender(); return; }
   if (!isDragging && e.changedTouches.length === 1) {
     const t = e.changedTouches[0];
     if (t.identifier === touchId) {
@@ -1169,20 +1432,23 @@ canvas.addEventListener('touchend', e => {
 
 // ---- 控制按钮 ----
 btnUndo.addEventListener('click', () => {
-  if (game.history.length === 0) return;
+  if (game.history.length === 0 || aiThinking_) return;
   game.undo();
   renderer.cachedTerritory = null;
   if (renderer.showTerritory) renderer.cachedTerritory = game.computeTerritory();
   updateUI();
   requestRender();
+  if (aiEnabled && game.turn === aiColor && !game.gameOver) scheduleAIMove();
 });
 
 btnPass.addEventListener('click', () => {
+  if (aiThinking_) return;
   const over = game.pass();
   renderer.cachedTerritory = null;
   updateUI();
   requestRender();
-  if (over) showResult();
+  if (over) { showResult(); return; }
+  if (aiEnabled && game.turn === aiColor) scheduleAIMove();
 });
 
 btnTerritory.addEventListener('click', () => {
@@ -1226,6 +1492,22 @@ btnCountResult.addEventListener('click', () => {
   updateUI();
   showResult();
   requestRender();
+});
+
+btnAI.addEventListener('click', () => {
+  if (game.gameOver || aiThinking_) return;
+  aiEnabled = !aiEnabled;
+  updateUI();
+  if (aiEnabled && game.turn === aiColor) scheduleAIMove();
+});
+
+btnSave.addEventListener('click', saveGame);
+
+btnLoad.addEventListener('click', () => {
+  if (aiMoveTimer) { clearTimeout(aiMoveTimer); aiMoveTimer = null; }
+  aiThinking_ = false;
+  aiOverlay.classList.remove('show');
+  loadGame();
 });
 
 btnRestart.addEventListener('click', () => {
@@ -1292,6 +1574,10 @@ function startGame(N) {
   game = new GoGame(N);
   renderer = new BoardRenderer(canvas, game);
   sizeOverlay.classList.remove('show');
+  if (aiMoveTimer) { clearTimeout(aiMoveTimer); aiMoveTimer = null; }
+  aiOverlay.classList.remove('show');
+  aiEnabled = false;
+  aiThinking_ = false;
   resize();
   game.computeValidMoves();
   updateUI();
