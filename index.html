@@ -80,6 +80,9 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 .sidebar-item .del{background:none;border:none;color:rgba(255,100,100,.5);font-size:15px;cursor:pointer;padding:2px 4px;border-radius:4px;line-height:1;flex-shrink:0}
 .sidebar-item .del:hover{color:#ff6b6b;background:rgba(255,100,100,.15)}
 .sidebar-empty{padding:32px 16px;text-align:center;color:rgba(255,255,255,.25);font-size:13px;line-height:1.6}
+#sidebar-new{flex-shrink:0;padding:12px 16px;border:none;border-top:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.04);color:#F5E6C8;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s;width:100%;text-align:center}
+#sidebar-new:hover{background:rgba(255,255,255,.1)}
+#sidebar-new:active{background:rgba(255,255,255,.05)}
 
 /* ===== AI / 保存 / 读取 ===== */
 #bottom-bar .sep{width:1px;height:28px;background:rgba(255,255,255,.15);margin:0 4px;align-self:center}
@@ -88,6 +91,8 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 #bottom-bar .btn-ai.active:active{box-shadow:0 0 4px rgba(50,205,50,.3)}
 #bottom-bar .btn-save{background:linear-gradient(135deg,#4A6B8A,#5F9EA0)}
 #bottom-bar .btn-load{background:linear-gradient(135deg,#8B5A2B,#CD853F)}
+#bottom-bar #btn-bgm{background:linear-gradient(135deg,#5F4B8B,#7B68AE)}
+#bottom-bar #btn-bgm.active{background:linear-gradient(135deg,#6A5ACD,#9370DB);box-shadow:0 0 12px rgba(106,90,205,.4)}
 #ai-thinking{display:none;color:#90EE90;font-size:12px;font-weight:400;background:rgba(0,0,0,.3);padding:2px 10px;border-radius:10px;white-space:nowrap}
 #ai-thinking.show{display:inline-block}
 </style>
@@ -126,6 +131,7 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
   <div id="sidebar-list">
     <div class="sidebar-empty">暂无保存的棋局<br>对局中点击 💾 保存</div>
   </div>
+  <button id="sidebar-new">＋ 新建棋局</button>
 </div>
 <button id="sidebar-toggle">棋局</button>
 
@@ -141,6 +147,7 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
   <span id="ai-thinking">⏳ 思考中…</span>
   <button id="btn-save" class="btn-save">💾 保存</button>
   <button id="btn-load" class="btn-load">📂 读取</button>
+  <button id="btn-bgm">🔊 BGM</button>
 </div>
 
 <div id="result-overlay">
@@ -1106,32 +1113,48 @@ const CHORDS_C = [
   [NOTES.F4, NOTES.A4, NOTES.C5]
 ];
 
+// Chora D — 开局前 10 手，空灵开放式和弦 (Cmaj → Am7 → Fmaj7 → G)
+const CHORDS_D = [
+  [NOTES.C5, NOTES.G4, NOTES.E4],
+  [NOTES.A4, NOTES.E4, NOTES.C4],
+  [NOTES.F4, NOTES.A4, NOTES.C5],
+  [NOTES.G4, NOTES.D4, NOTES.B3]
+];
+
 let bgmMode = 'A';
 let bgmPlaying = false;
 let bgmTimer = null;
 let bgmStarted = false;
+let bgmEnabled = true;
 
 function getBGMChords() {
   if (bgmMode === 'B') return CHORDS_B;
   if (bgmMode === 'C') return CHORDS_C;
+  if (bgmMode === 'D') return CHORDS_D;
   return CHORDS_A;
 }
 
 function getBGMChordDuration() {
   if (bgmMode === 'B') return 2.0;
   if (bgmMode === 'C') return 0.9;
+  if (bgmMode === 'D') return 2.0;
   return 1.5;
 }
 
 function getBGMGain() {
   if (bgmMode === 'B') return 0.09;
   if (bgmMode === 'C') return 0.10;
+  if (bgmMode === 'D') return 0.05;
   return 0.06;
 }
 
 function determineBGMMode() {
   if (!game) return 'A';
   if (game.gameOver) return bgmMode; // 终局保持当前模式
+  if (!bgmEnabled) return bgmMode;
+
+  // 开局：前 10 手 → Chora D
+  if (game.history.length < 10) return 'D';
 
   // 打劫检测
   if (game.koPoint) return 'C';
@@ -1224,6 +1247,7 @@ function playBGMLoop() {
 
 function startBGM() {
   if (bgmPlaying) return;
+  if (!bgmEnabled) return;
   if (!audioCtx) {
     try { initAudio(); } catch(e) { return; }
     if (!audioCtx) return;
@@ -1279,6 +1303,7 @@ const btnCountResult = document.getElementById('btn-count-result');
 const btnAI = document.getElementById('btn-ai');
 const btnSave = document.getElementById('btn-save');
 const btnLoad = document.getElementById('btn-load');
+const btnBGM = document.getElementById('btn-bgm');
 const aiThinking = document.getElementById('ai-thinking');
 const aiOverlay = document.getElementById('ai-overlay');
 const sidebar = document.getElementById('sidebar');
@@ -1286,6 +1311,7 @@ const sidebarToggle = document.getElementById('sidebar-toggle');
 const sidebarBackdrop = document.getElementById('sidebar-backdrop');
 const sidebarList = document.getElementById('sidebar-list');
 const sidebarCount = document.getElementById('sidebar-count');
+const sidebarNew = document.getElementById('sidebar-new');
 const scoreDisplay = document.getElementById('score-display');
 const blackScoreEl = document.getElementById('black-score');
 const whiteScoreEl = document.getElementById('white-score');
@@ -1390,6 +1416,7 @@ function updateUI() {
   btnCountResult.disabled = game.gameOver;
   btnAI.disabled = game.gameOver || thinking;
   btnAI.classList.toggle('active', aiEnabled);
+  btnBGM.classList.toggle('active', bgmEnabled);
   aiThinking.classList.toggle('show', thinking);
   btnTerritory.classList.toggle('active', renderer.showTerritory);
   btnCount.classList.toggle('active', scoreDisplay.style.display !== 'none');
@@ -1525,6 +1552,8 @@ function loadGame(id) {
 
     resultOverlay.classList.remove('show');
     if (game) { aiOverlay.classList.remove('show'); }
+    stopBGM();
+    bgmEnabled = true;
     game = new GoGame(data.N);
     game.restore(data);
     renderer = new BoardRenderer(canvas, game);
@@ -1822,8 +1851,22 @@ btnLoad.addEventListener('click', () => {
   toggleSidebar();
 });
 
+btnBGM.addEventListener('click', () => {
+  bgmEnabled = !bgmEnabled;
+  if (bgmEnabled) {
+    if (game && !game.gameOver && !bgmPlaying) startBGM();
+  } else {
+    stopBGM();
+  }
+  updateUI();
+});
+
 sidebarToggle.addEventListener('click', toggleSidebar);
 sidebarBackdrop.addEventListener('click', closeSidebar);
+sidebarNew.addEventListener('click', () => {
+  closeSidebar();
+  sizeOverlay.classList.add('show');
+});
 
 btnRestart.addEventListener('click', () => {
   resultOverlay.classList.remove('show');
@@ -1892,6 +1935,8 @@ function startGame(N) {
   closeSidebar();
   if (aiMoveTimer) { clearTimeout(aiMoveTimer); aiMoveTimer = null; }
   aiOverlay.classList.remove('show');
+  stopBGM();
+  bgmEnabled = true;
   aiEnabled = false;
   aiThinking_ = false;
   resize();
