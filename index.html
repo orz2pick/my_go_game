@@ -22,15 +22,17 @@ body{background:#8B7355}
 
 /* ===== Canvas ===== */
 canvas#board{display:block;border-radius:4px;touch-action:none}
+#minimap{display:none;position:absolute;bottom:8px;right:8px;border-radius:6px;box-shadow:0 2px 12px rgba(0,0,0,.5);border:2px solid rgba(255,255,255,.25);z-index:25;pointer-events:none}
+#minimap.show{display:block}
 #hand-cursor{position:absolute;pointer-events:none;z-index:20;opacity:0;transition:opacity .25s;width:48px;height:48px;display:none}
 #hand-cursor.visible{opacity:1}
 
 /* ===== 底部控制栏 ===== */
 #bottom-bar{flex-shrink:0;display:flex;justify-content:center;gap:8px;padding:8px 12px 12px;background:linear-gradient(0deg,#3A2A1A,#5C4033);box-shadow:0 -2px 6px rgba(0,0,0,.4);flex-wrap:wrap}
 #bottom-bar button{padding:7px 14px;border:none;border-radius:8px;font-size:13px;font-weight:600;color:#fff;background:linear-gradient(135deg,#8B7355,#A0896A);box-shadow:0 2px 4px rgba(0,0,0,.3);cursor:pointer;transition:transform .1s,box-shadow .1s;min-width:60px;white-space:nowrap}
-#bottom-bar button:active{transform:scale(.93);box-shadow:0 0 2px rgba(0,0,0,.3)}
+#bottom-bar button:active{transform:scale(.93);box-shadow:0 0 2px rgba(0,0,0,.3);color:#000}
 #bottom-bar button:disabled{opacity:.4;transform:none;cursor:not-allowed}
-#bottom-bar button.active{background:linear-gradient(135deg,#A07818,#C89820)}
+#bottom-bar button.active{background:linear-gradient(135deg,#A07818,#C89820);color:#000}
 
 /* ===== 结果弹窗 ===== */
 #result-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
@@ -115,6 +117,7 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 
 <div id="board-wrap">
   <canvas id="board"></canvas>
+  <canvas id="minimap"></canvas>
   <div id="ai-overlay">
     <div class="spinner"></div>
     <span>AI 思考中…</span>
@@ -699,10 +702,12 @@ class BoardRenderer {
     this.scale = 1;
     this.transX = 0;
     this.transY = 0;
-    this.showTerritory = false;  // 领地预览切换
+    this.showTerritory = false;
     this.cachedTerritory = null;
-    // 气数值显示的缩放因子
     this.libertyFontSize = 0;
+    // minimap
+    this.miniCanvas = document.getElementById('minimap');
+    this.miniCtx = this.miniCanvas.getContext('2d');
   }
 
   calcSize() {
@@ -722,6 +727,9 @@ class BoardRenderer {
     this.canvas.height = this.H;
     this.canvas.style.width = this.W + 'px';
     this.canvas.style.height = this.H + 'px';
+    const miniSize = Math.max(80, Math.min(150, this.CELL * 3.5));
+    this.miniCanvas.width = miniSize;
+    this.miniCanvas.height = miniSize;
   }
 
   pointToCanvas(r, c) {
@@ -993,10 +1001,78 @@ class BoardRenderer {
     }
 
     ctx.restore();
+    this.drawMinimap();
   }
 
   startAnimation(r, c, color) {
     this.animating = {r, c, color, progress: 0, startTime: performance.now()};
+  }
+
+  drawMinimap() {
+    // 仅在缩放或平移明显时显示
+    const zoomed = Math.abs(this.scale - 1) > 0.05 || Math.abs(this.transX) > 5 || Math.abs(this.transY) > 5;
+    this.miniCanvas.classList.toggle('show', zoomed);
+    if (!zoomed) return;
+
+    const mc = this.miniCtx;
+    const mw = this.miniCanvas.width, mh = this.miniCanvas.height;
+    const pad = 3;
+    const cell = (mw - pad * 2) / this.N;
+    const off = pad + cell / 2;
+
+    mc.clearRect(0, 0, mw, mh);
+    // 背景
+    mc.fillStyle = '#D4A853';
+    mc.fillRect(0, 0, mw, mh);
+
+    // 网格
+    mc.strokeStyle = 'rgba(60,40,20,0.4)';
+    mc.lineWidth = 0.5;
+    for (let i = 0; i < this.N; i++) {
+      const p = off + i * cell;
+      mc.beginPath(); mc.moveTo(off, p); mc.lineTo(off + (this.N-1)*cell, p); mc.stroke();
+      mc.beginPath(); mc.moveTo(p, off); mc.lineTo(p, off + (this.N-1)*cell); mc.stroke();
+    }
+
+    // 星位
+    const stars = this.getStarPoints();
+    mc.fillStyle = 'rgba(60,40,20,0.5)';
+    for (const [r, c] of stars) {
+      mc.beginPath(); mc.arc(off + c * cell, off + r * cell, cell * 0.3, 0, 7); mc.fill();
+    }
+
+    // 棋子
+    const board = this.game.board;
+    for (let r = 0; r < this.N; r++) {
+      for (let c = 0; c < this.N; c++) {
+        if (board[r][c] !== 0) {
+          const px = off + c * cell, py = off + r * cell;
+          mc.beginPath(); mc.arc(px, py, cell * 0.38, 0, 7);
+          mc.fillStyle = board[r][c] === 1 ? '#333' : '#fff';
+          mc.fill();
+          if (board[r][c] === 2) { mc.strokeStyle = 'rgba(0,0,0,0.2)'; mc.lineWidth = 0.5; mc.stroke(); }
+        }
+      }
+    }
+
+    // 视野矩形
+    const vLeft = -this.transX / this.scale;
+    const vTop = -this.transY / this.scale;
+    const vW = this.canvas.width / this.scale;
+    const vH = this.canvas.height / this.scale;
+    const sx = (vLeft / this.W) * mw;
+    const sy = (vTop / this.H) * mh;
+    const sw = (vW / this.W) * mw;
+    const sh = (vH / this.H) * mh;
+    mc.strokeStyle = '#fff';
+    mc.lineWidth = 1.5;
+    mc.shadowColor = 'rgba(0,0,0,0.5)';
+    mc.shadowBlur = 4;
+    mc.strokeRect(sx, sy, sw, sh);
+    mc.shadowColor = 'transparent';
+    mc.shadowBlur = 0;
+    mc.fillStyle = 'rgba(255,255,255,0.08)';
+    mc.fillRect(sx, sy, sw, sh);
   }
 }
 
