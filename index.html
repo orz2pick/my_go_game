@@ -55,10 +55,11 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 .size-btn .sub{display:block;font-size:12px;font-weight:400;opacity:.7;margin-top:2px}
 
 /* ===== AI 思考遮罩 ===== */
-#ai-overlay{display:none;position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:30;align-items:center;justify-content:center;flex-direction:column;border-radius:4px}
+#ai-overlay{display:none;position:absolute;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.55);z-index:50;align-items:center;justify-content:center;flex-direction:column;border-radius:4px}
 #ai-overlay.show{display:flex}
 #ai-overlay .spinner{width:48px;height:48px;border:4px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:ai-spin .8s linear infinite}
 #ai-overlay span{color:#fff;font-size:16px;font-weight:600;margin-top:14px;text-shadow:0 1px 4px rgba(0,0,0,.5);letter-spacing:1px}
+#ai-overlay #ai-timer{color:#90EE90;font-size:14px;font-weight:400;margin-top:4px;font-family:monospace;letter-spacing:0}
 @keyframes ai-spin{to{transform:rotate(360deg)}}
 
 /* ===== 左侧棋局列表侧边栏 ===== */
@@ -95,8 +96,9 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
 #bottom-bar .btn-load{background:linear-gradient(135deg,#8B5A2B,#CD853F)}
 #bottom-bar #btn-bgm{background:linear-gradient(135deg,#5F4B8B,#7B68AE)}
 #bottom-bar #btn-bgm.active{background:linear-gradient(135deg,#6A5ACD,#9370DB);box-shadow:0 0 12px rgba(106,90,205,.4)}
-#ai-thinking{display:none;color:#90EE90;font-size:12px;font-weight:400;background:rgba(0,0,0,.3);padding:2px 10px;border-radius:10px;white-space:nowrap}
+#ai-thinking{display:none;color:#90EE90;font-size:12px;font-weight:400;background:rgba(0,0,0,.3);padding:2px 10px;border-radius:10px;white-space:nowrap;animation:ai-pulse 1.2s ease-in-out infinite}
 #ai-thinking.show{display:inline-block}
+@keyframes ai-pulse{0%,100%{opacity:1}50%{opacity:.4}}
 </style>
 </head>
 <body>
@@ -121,6 +123,7 @@ canvas#board{display:block;border-radius:4px;touch-action:none}
   <div id="ai-overlay">
     <div class="spinner"></div>
     <span>AI 思考中…</span>
+    <span id="ai-timer">0.00s</span>
   </div>
   <img id="hand-cursor" src="手指.png" alt="" draggable="false">
 </div>
@@ -567,6 +570,61 @@ class GoGame {
 // ============================================================
 // ====================== 2. 贪心 AI ===========================
 // ============================================================
+// ===== AI 做活辅助函数 =====
+function getAllGroups(board, N, color) {
+  const visited = Array.from({length: N}, () => Array(N).fill(false));
+  const groups = [];
+  for (let r = 0; r < N; r++) {
+    for (let c = 0; c < N; c++) {
+      if (board[r][c] !== color || visited[r][c]) continue;
+      const group = [];
+      const stack = [[r, c]];
+      visited[r][c] = true;
+      while (stack.length) {
+        const [cr, cc] = stack.pop();
+        group.push([cr, cc]);
+        for (const [nr, nc] of neighborsAt(cr, cc, N)) {
+          if (board[nr][nc] === color && !visited[nr][nc]) {
+            visited[nr][nc] = true;
+            stack.push([nr, nc]);
+          }
+        }
+      }
+      groups.push(group);
+    }
+  }
+  return groups;
+}
+
+function getGroupLiberties(group, board, N) {
+  const libs = new Set();
+  for (const [r, c] of group) {
+    for (const [nr, nc] of neighborsAt(r, c, N)) {
+      if (board[nr][nc] === 0) libs.add(nr * N + nc);
+    }
+  }
+  return [...libs];
+}
+
+function estimateEyeValue(r, c, origBoard, simBoard, N, color, opp) {
+  let val = 0;
+  for (const [nr, nc] of neighborsAt(r, c, N)) {
+    if (simBoard[nr][nc] !== 0) continue;
+    let adj = 0;
+    for (const [nnr, nnc] of neighborsAt(nr, nc, N)) {
+      if (simBoard[nnr][nnc] === color) adj++;
+    }
+    if (adj === 4) val += 300;
+    else if (adj === 3) val += 80;
+  }
+  let adjColor = 0;
+  for (const [nr, nc] of neighborsAt(r, c, N)) {
+    if (simBoard[nr][nc] === color) adjColor++;
+  }
+  if (adjColor >= 3) val += 60;
+  return val;
+}
+
 class GoAI {
   constructor(game, color) {
     this.game = game;
@@ -577,68 +635,84 @@ class GoAI {
     const game = this.game;
     const N = game.N;
     const opp = this.color === 1 ? 2 : 1;
+    const board = game.board;
     let bestScore = -Infinity;
     let bestMove = null;
+
+    const myGroups = getAllGroups(board, N, this.color);
+    const oppGroups = getAllGroups(board, N, opp);
+    const myWeakSet = new Set();
+    const oppWeakSet = new Set();
+    for (const g of myGroups) {
+      const libs = getGroupLiberties(g, board, N);
+      if (libs.length <= 3) libs.forEach(k => myWeakSet.add(k));
+    }
+    for (const g of oppGroups) {
+      const libs = getGroupLiberties(g, board, N);
+      if (libs.length <= 2) libs.forEach(k => oppWeakSet.add(k));
+    }
 
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
         if (!game.isValidMove(r, c)) continue;
 
         let score = 0;
+        const mk = r * N + c;
 
-        // 模拟落子
         const bc = game.boardClone();
         bc[r][c] = this.color;
 
-        // ① 提子 (+200/子)
         let captures = 0;
         for (const [nr, nc] of game.neighbors(r, c)) {
           if (bc[nr][nc] === opp) {
             const grp = findGroupAt(nr, nc, bc, N);
-            if (findLibertiesAt(grp, bc, N).length === 0) {
-              captures += grp.length;
-            }
+            if (findLibertiesAt(grp, bc, N).length === 0) captures += grp.length;
           }
         }
         score += captures * 200;
 
-        // ② 自填气 (无提子时严厉惩罚)
+        if (captures === 0) {
+          let allOwn = true;
+          for (const [nr, nc] of game.neighbors(r, c)) {
+            if (game.board[nr][nc] !== this.color) { allOwn = false; break; }
+          }
+          if (allOwn) score -= 5000;
+        }
+
         const myGrp = findGroupAt(r, c, bc, N);
-        if (findLibertiesAt(myGrp, bc, N).length === 0 && captures === 0) {
-          score -= 500;
+        if (findLibertiesAt(myGrp, bc, N).length === 0 && captures === 0) score -= 500;
+
+        if (myWeakSet.has(mk)) {
+          const libsAfter = findLibertiesAt(findGroupAt(r, c, bc, N), bc, N);
+          score += Math.max(0, libsAfter.length - 1) * 80 + 60;
         }
 
-        // ③ 连接己方棋 (+10/邻)
-        for (const [nr, nc] of game.neighbors(r, c)) {
-          if (game.board[nr][nc] === this.color) score += 10;
-        }
+        if (oppWeakSet.has(mk)) score += 120;
 
-        // ④ 靠近对方 (+4/邻)
-        for (const [nr, nc] of game.neighbors(r, c)) {
-          if (game.board[nr][nc] === opp) score += 4;
-        }
+        const eyeScore = estimateEyeValue(r, c, board, bc, N, this.color, opp);
+        score += eyeScore;
 
-        // ⑤ 星位/小目/三三 开局偏好
-        const distEdge = Math.min(r, c, N - 1 - r, N - 1 - c);
-        if (distEdge === 2) score += 8;
-        else if (distEdge === 3) score += 6;
-        else if (distEdge === 0) score += 3;
-        else if (distEdge === 1) score += 4;
+        let conn = 0;
+        for (const [nr, nc] of game.neighbors(r, c)) if (game.board[nr][nc] === this.color) conn++;
+        score += conn * 18;
 
-        // ⑥ 靠近对手最近落子 (+6)
+        let adjOpp = 0;
+        for (const [nr, nc] of game.neighbors(r, c)) if (game.board[nr][nc] === opp) adjOpp++;
+        score += adjOpp * 4;
+
+        const de = Math.min(r, c, N - 1 - r, N - 1 - c);
+        if (de === 2) score += 8; else if (de === 3) score += 6;
+        else if (de === 0) score += 3; else if (de === 1) score += 4;
+
         if (game.lastMove) {
           const dd = Math.abs(r - game.lastMove.r) + Math.abs(c - game.lastMove.c);
           if (dd <= 3) score += 6 - dd;
         }
 
-        if (score > bestScore) {
-          bestScore = score;
-          bestMove = { r, c };
-        }
+        if (score > bestScore) { bestScore = score; bestMove = { r, c }; }
       }
     }
 
-    // 分数太低就停一手 (真没棋了)
     if (bestScore < -100) return null;
     return bestMove;
   }
@@ -1597,8 +1671,17 @@ function doAIMove() {
   aiThinking_ = true;
   aiOverlay.classList.add('show');
   updateUI();
+  const t0 = performance.now();
+  const timerEl = document.getElementById('ai-timer');
+  timerEl.textContent = '0.00s';
+  const timerInterval = setInterval(() => {
+    timerEl.textContent = ((performance.now() - t0) / 1000).toFixed(2) + 's';
+  }, 80);
   const ai = new GoAI(game, aiColor);
   const move = ai.getBestMove();
+  const elapsed = (performance.now() - t0) / 1000;
+  clearInterval(timerInterval);
+  timerEl.textContent = elapsed.toFixed(2) + 's';
   aiThinking_ = false;
   aiOverlay.classList.remove('show');
   if (move) {
@@ -1612,6 +1695,8 @@ function doAIMove() {
     if (clr === 1) playBlackMoveSound(); else playWhiteMoveSound();
     if (!bgmStarted) startBGM(); else updateBGM();
     updateUI();
+    turnText.textContent = 'AI 计算 ' + elapsed.toFixed(2) + '秒';
+    setTimeout(() => { if (!aiThinking_) updateUI(); }, 3000);
     requestRender();
     if (game.gameOver) { stopBGM(); showResult(); return; }
     if (aiEnabled && game.turn === aiColor && !game.gameOver) {
